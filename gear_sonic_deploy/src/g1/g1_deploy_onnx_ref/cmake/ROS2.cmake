@@ -31,10 +31,21 @@ foreach(install_path ${ROS2_INSTALL_PATHS})
   foreach(distro ${ROS2_DISTROS})
     set(ros2_include_path "${install_path}/${distro}/include")
     if(EXISTS "${ros2_include_path}")
-      set(ROS2_INCLUDE_DIRS "${ros2_include_path}")
+      set(ROS2_INCLUDE_DIRS "")
       file(GLOB ROS2_INCLUDE_SUBDIRS "${ros2_include_path}/*")
       foreach(subdir ${ROS2_INCLUDE_SUBDIRS})
         if(IS_DIRECTORY ${subdir})
+          get_filename_component(subdir_name "${subdir}" NAME)
+          # Avoid generic/conflicting subtrees under /opt/ros/<distro>/include that
+          # can shadow system headers or bundled third-party SDK headers.
+          if(subdir_name STREQUAL "dds" OR
+             subdir_name STREQUAL "ddsc" OR
+             subdir_name STREQUAL "ddscxx" OR
+             subdir_name STREQUAL "idl" OR
+             subdir_name STREQUAL "onnxruntime" OR
+             subdir_name STREQUAL "unitree")
+            continue()
+          endif()
           list(APPEND ROS2_INCLUDE_DIRS ${subdir})
         endif()
       endforeach()

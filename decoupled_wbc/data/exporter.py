@@ -379,7 +379,11 @@ class Gr00tDataExporter(LeRobotDataset):
         self._save_episode_table(episode_buffer, episode_index)
 
         # @note (k2): computing only non-video features stats
-        non_video_features = {k: v for k, v in self.features.items() if v["dtype"] not in ["video"]}
+        non_video_features = {
+            k: v
+            for k, v in self.features.items()
+            if v["dtype"] not in ["video"] and not k.startswith("observation.images.")
+        }
         non_vid_ep_buffer = {
             k: v for k, v in episode_buffer.items() if k in non_video_features.keys()
         }
@@ -478,6 +482,8 @@ def hf_transform_to_torch_by_features(
                 "float64": torch.float64,
                 "int32": torch.int32,
                 "int64": torch.int64,
+                "uint8": torch.uint8,
+                "uint16": torch.int32,
             }
             items_dict[key] = [
                 torch.tensor(x, dtype=dtype_mapping[dtype_str]) for x in items_dict[key]

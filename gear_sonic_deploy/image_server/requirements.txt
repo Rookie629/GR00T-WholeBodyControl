@@ -1,0 +1,16 @@
+# Core dependencies for image_server.py / image_client.py and local viewers.
+msgpack>=1.0
+msgpack-numpy>=0.4.8
+numpy>=1.24
+opencv-python>=4.8
+pyzmq>=25
+pyrealsense2>=2.54
+
+# Notes:
+# - `composed_camera_bridge.py`, `depth_episode_recorder.py`, and
+#   `stream_smoke_test.py` also depend on this repo's local Python packages.
+# - `gear_sonic_deploy/sonic_data` provides the local typed image transport used
+#   by bridge/state helper scripts, and requires both `msgpack` and
+#   `msgpack-numpy`.
+# - ROS2 Python packages such as `rclpy` are expected to come from the system
+#   ROS installation (for example `/opt/ros/humble`) rather than pip.

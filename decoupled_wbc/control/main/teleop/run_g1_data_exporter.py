@@ -185,17 +185,17 @@ class Gr00tDataCollector:
 
             # Add images based on dataset features
             images = self.latest_image_msg["images"]
-            for feature_name, feature_info in self.data_exporter.features.items():
-                if feature_info.get("dtype") in ["image", "video"]:
-                    # Extract image key from feature name (e.g., "observation.images.ego_view" -> "ego_view")
-                    image_key = feature_name.split(".")[-1]
+            for feature_name in self.data_exporter.features:
+                if not feature_name.startswith("observation.images."):
+                    continue
 
-                    if image_key not in images:
-                        raise ValueError(
-                            f"Required image '{image_key}' for feature '{feature_name}' "
-                            f"not found in image message. Available images: {list(images.keys())}"
-                        )
-                    frame_data[feature_name] = images[image_key]
+                image_key = feature_name.split(".")[-1]
+                if image_key not in images:
+                    raise ValueError(
+                        f"Required image '{image_key}' for feature '{feature_name}' "
+                        f"not found in image message. Available images: {list(images.keys())}"
+                    )
+                frame_data[feature_name] = images[image_key]
 
             self.data_exporter.add_frame(frame_data)
 
@@ -283,8 +283,16 @@ def main(config: DataExporterConfig):
         waist_location=waist_location, high_elbow_pose=config.high_elbow_pose
     )
 
-    dataset_features = get_dataset_features(g1_rm, config.add_stereo_camera)
-    modality_config = get_modality_config(g1_rm, config.add_stereo_camera)
+    dataset_features = get_dataset_features(
+        g1_rm,
+        add_stereo_camera=config.add_stereo_camera,
+        add_depth_camera=config.add_depth_camera,
+    )
+    modality_config = get_modality_config(
+        g1_rm,
+        add_stereo_camera=config.add_stereo_camera,
+        add_depth_camera=config.add_depth_camera,
+    )
 
     text_to_speech = TextToSpeech() if config.text_to_speech else None
 

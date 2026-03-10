@@ -297,6 +297,9 @@ class DataExporterConfig(BaseConfig, ComposedCameraClientConfig):
     add_stereo_camera: bool = True
     """Whether to add stereo camera for data collection. If False, only use a signle ego view camera."""
 
+    add_depth_camera: bool = False
+    """Whether to add a depth image field for data collection."""
+
 
 @dataclass
 class SyncSimDataCollectionConfig(ControlLoopConfig, TeleopConfig):

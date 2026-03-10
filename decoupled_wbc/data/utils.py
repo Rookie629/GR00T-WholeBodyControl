@@ -2,7 +2,9 @@ from decoupled_wbc.control.robot_model.robot_model import RobotModel
 from decoupled_wbc.data.constants import RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH
 
 
-def get_modality_config(robot_model: RobotModel, add_stereo_camera: bool = False) -> dict:
+def get_modality_config(
+    robot_model: RobotModel, add_stereo_camera: bool = False, add_depth_camera: bool = False
+) -> dict:
     """
     Get the modality config for the robot model.
     """
@@ -77,11 +79,22 @@ def get_modality_config(robot_model: RobotModel, add_stereo_camera: bool = False
                 "ego_view_right_mono": {"original_key": "observation.images.ego_view_right_mono"},
             }
         )
+    if add_depth_camera:
+        modality_config["video"].update(
+            {
+                "ego_view_depth": {
+                    "original_key": "observation.images.ego_view_depth",
+                    "storage_dtype": "uint16",
+                }
+            }
+        )
 
     return modality_config
 
 
-def get_dataset_features(robot_model: RobotModel, add_stereo_camera: bool = False) -> dict:
+def get_dataset_features(
+    robot_model: RobotModel, add_stereo_camera: bool = False, add_depth_camera: bool = False
+) -> dict:
     """
     Get the dataset features for the robot model.
     """
@@ -150,6 +163,16 @@ def get_dataset_features(robot_model: RobotModel, add_stereo_camera: bool = Fals
                     "shape": [RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH, 3],
                     "names": ["height", "width", "channel"],
                 },
+            }
+        )
+    if add_depth_camera:
+        dataset_features.update(
+            {
+                "observation.images.ego_view_depth": {
+                    "dtype": "uint16",
+                    "shape": [RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH],
+                    "names": ["height", "width"],
+                }
             }
         )
 

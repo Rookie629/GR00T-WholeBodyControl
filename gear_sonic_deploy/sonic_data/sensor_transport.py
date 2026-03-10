@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 import base64
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Dict
+from typing import Any
 
 import cv2
 import msgpack
@@ -12,59 +13,48 @@ import zmq
 
 @dataclass
 class ImageMessageSchema:
-    """
-    This is a standardized message schema for image data.
-    Any camera should use this schema to serialize (send to queue) and
-    deserialize (receive from queue) the image data.
+    """Typed image transport schema used by the gear_sonic bridge/client path."""
 
-    """
+    timestamps: dict[str, float]
+    images: dict[str, np.ndarray]
 
-    timestamps: Dict[str, float]
-    """Dictionary of timestamps, keyed by image identifier (e.g., {"ego_view": 123.45})"""
-    images: Dict[str, np.ndarray]
-    """Dictionary of images, keyed by image identifier (e.g., {"ego_view": array, "ego_view_left_mono": array})"""
-
-    def serialize(self) -> Dict[str, Any]:
-        """Serialize the message for transmission."""
+    def serialize(self) -> dict[str, Any]:
         serialized_msg = {"timestamps": self.timestamps, "images": {}}
         for key, image in self.images.items():
             serialized_msg["images"][key] = ImageUtils.encode_typed_image(image)
         return serialized_msg
 
     @staticmethod
-    def deserialize(data: Dict[str, Any]) -> "ImageMessageSchema":
-        """Deserialize received message data."""
+    def deserialize(data: dict[str, Any]) -> "ImageMessageSchema":
         timestamps = data.get("timestamps", {})
         images = {}
         for key, value in data.get("images", {}).items():
-            if isinstance(value, str) or isinstance(value, dict):
+            if isinstance(value, (str, dict)):
                 images[key] = ImageUtils.decode_typed_image(value)
             else:
                 images[key] = value
         return ImageMessageSchema(timestamps=timestamps, images=images)
 
-    def asdict(self) -> Dict[str, Any]:
-        """Convert to dictionary format."""
+    def asdict(self) -> dict[str, Any]:
         return {"timestamps": self.timestamps, "images": self.images}
 
 
 class SensorServer:
-    def start_server(self, port: int):
+    def start_server(self, port: int) -> None:
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PUB)
-        self.socket.setsockopt(zmq.SNDHWM, 20)  # high water mark
+        self.socket.setsockopt(zmq.SNDHWM, 20)
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.bind(f"tcp://*:{port}")
         print(f"Sensor server running at tcp://*:{port}")
-
         self.message_sent = 0
         self.message_dropped = 0
 
-    def stop_server(self):
+    def stop_server(self) -> None:
         self.socket.close()
         self.context.term()
 
-    def send_message(self, data: Dict[str, Any]):
+    def send_message(self, data: dict[str, Any]) -> None:
         try:
             packed = msgpack.packb(data, use_bin_type=True)
             self.socket.send(packed, flags=zmq.NOBLOCK)
@@ -72,7 +62,6 @@ class SensorServer:
             self.message_dropped += 1
             print(f"[Warning] message dropped: {self.message_dropped}")
         self.message_sent += 1
-
         if self.message_sent % 100 == 0:
             print(
                 f"[Sensor server] Message sent: {self.message_sent}, message dropped: {self.message_dropped}"
@@ -80,28 +69,21 @@ class SensorServer:
 
 
 class SensorClient:
-    def start_client(self, server_ip: str, port: int):
+    def start_client(self, server_ip: str, port: int) -> None:
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.SUB)
         self.socket.setsockopt_string(zmq.SUBSCRIBE, "")
-        self.socket.setsockopt(zmq.CONFLATE, True)  # last msg only.
-        self.socket.setsockopt(zmq.RCVHWM, 3)  # queue size 3 for receive buffer
+        self.socket.setsockopt(zmq.CONFLATE, True)
+        self.socket.setsockopt(zmq.RCVHWM, 3)
         self.socket.connect(f"tcp://{server_ip}:{port}")
 
-    def stop_client(self):
+    def stop_client(self) -> None:
         self.socket.close()
         self.context.term()
 
-    def receive_message(self):
+    def receive_message(self) -> dict[str, Any]:
         packed = self.socket.recv()
         return msgpack.unpackb(packed, object_hook=m.decode)
-
-
-class CameraMountPosition(Enum):
-    EGO_VIEW = "ego_view"
-    HEAD = "head"
-    LEFT_WRIST = "left_wrist"
-    RIGHT_WRIST = "right_wrist"
 
 
 class ImageUtils:
@@ -132,13 +114,13 @@ class ImageUtils:
         return cv2.imdecode(depth_array, cv2.IMREAD_UNCHANGED)
 
     @staticmethod
-    def encode_typed_image(image: np.ndarray) -> Dict[str, str]:
+    def encode_typed_image(image: np.ndarray) -> dict[str, str]:
         if ImageUtils.is_depth_image(image):
             return {"encoding": "png_depth_base64", "data": ImageUtils.encode_depth_image(image)}
         return {"encoding": "jpg_base64", "data": ImageUtils.encode_image(image)}
 
     @staticmethod
-    def decode_typed_image(image: str | Dict[str, str]) -> np.ndarray:
+    def decode_typed_image(image: str | dict[str, str]) -> np.ndarray:
         if isinstance(image, str):
             return ImageUtils.decode_image(image)
 
