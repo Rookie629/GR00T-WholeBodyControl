@@ -35,6 +35,7 @@ This is the codebase for the **GR00T Whole-Body Control (WBC)** projects. It hos
 - [TODOs](#todos)
 - [What's Included](#whats-included)
   - [Setup](#setup)
+- [Data Collection](#data-collection)
 - [Documentation](#documentation)
 - [Citation](#citation)
 - [License](#license)
@@ -176,6 +177,18 @@ git clone https://github.com/NVlabs/GR00T-WholeBodyControl.git
 cd GR00T-WholeBodyControl
 git lfs pull
 ```
+
+## Data Collection
+
+Local documentation for the current G1 RGBD collection pipeline:
+
+- [Pipeline Runtime Logic](README_pipeline_logic.md)
+- [Data Collection Summary](README_data_collection.md)
+- [Image Server README](gear_sonic_deploy/image_server/README.md)
+- [Sonic Data Utilities README](gear_sonic_deploy/sonic_data/README.md)
+- [Teleop Export README](decoupled_wbc/control/main/teleop/README.md)
+- [Sensor Transport README](decoupled_wbc/control/sensor/README.md)
+- [Dataset Format README](decoupled_wbc/data/README.md)
 
 ## Documentation
 
