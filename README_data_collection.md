@@ -7,7 +7,7 @@ The goal was to connect:
 
 - `gear_sonic_deploy` real-robot teleop
 - the G1 head RealSense D435
-- `decoupled_wbc` exporter
+- `gear_sonic_deploy/sonic_data` exporter
 - dataset storage with RGB, depth, robot state, and actions
 
 ## What Was Added
@@ -35,7 +35,7 @@ See:
 
 Directory:
 
-- `decoupled_wbc/control/main/teleop/`
+- `gear_sonic_deploy/sonic_data/`
 
 Purpose:
 
@@ -45,7 +45,7 @@ Purpose:
 
 See:
 
-- [decoupled_wbc/control/main/teleop/README.md](/home/yangke/KY/GR00T-WholeBodyControl/decoupled_wbc/control/main/teleop/README.md)
+- [gear_sonic_deploy/sonic_data/README.md](/home/yangke/KY/GR00T-WholeBodyControl/gear_sonic_deploy/sonic_data/README.md)
 
 ### 3. Image transport upgrade
 
@@ -67,16 +67,17 @@ See:
 
 Directory:
 
-- `decoupled_wbc/data/`
+- `gear_sonic_deploy/sonic_data/dataset/`
 
 Purpose:
 
 - define how the dataset describes RGB, depth, state, and action
-- write depth into the main dataset instead of dropping it
+- write local parquet metadata inspired by `G1_WB_Dex5_Collect_Clothes`
+- store RGB as mp4 and depth as `uint16` frame data
 
 See:
 
-- [decoupled_wbc/data/README.md](/home/yangke/KY/GR00T-WholeBodyControl/decoupled_wbc/data/README.md)
+- [gear_sonic_deploy/sonic_data/README.md](/home/yangke/KY/GR00T-WholeBodyControl/gear_sonic_deploy/sonic_data/README.md)
 
 ## End-To-End Pipeline
 
@@ -87,6 +88,40 @@ See:
 4. `run_g1_data_exporter.py` samples the latest state and latest image, builds a
    frame, and writes it into the dataset.
 5. RGB is stored as video, while depth is stored as `uint16` frame data.
+
+## Recommended Startup Order
+
+On G1:
+
+1. Start `gear_sonic_deploy/image_server/image_server.py`
+
+On collector:
+
+1. Activate the runtime environment:
+```bash
+cd /home/yangke/KY/GR00T-WholeBodyControl
+source .venv_teleop/bin/activate
+source /opt/ros/humble/setup.bash
+```
+2. Start `gear_sonic_deploy/deploy.sh`
+3. Start `gear_sonic/scripts/pico_manager_thread_server.py`
+4. Start `gear_sonic_deploy/image_server/composed_camera_bridge.py`
+5. Start either:
+```bash
+python3 gear_sonic_deploy/sonic_data/run_g1_data_exporter.py ...
+```
+or:
+```bash
+python3 gear_sonic_deploy/sonic_data/gui/main.py
+```
+
+## Episode Control
+
+- `c`: start recording, or stop and save the current episode
+- `x`: discard the current episode
+
+The GUI sends these commands for you. If you use the CLI path, they are sent on
+`/Gr00tKeyboardListener`.
 
 ## Runtime Components
 
@@ -100,6 +135,11 @@ Collector side:
 - `gear_sonic/scripts/pico_manager_thread_server.py`
 - `gear_sonic_deploy/image_server/composed_camera_bridge.py`
 - `gear_sonic_deploy/sonic_data/run_g1_data_exporter.py`
+
+Optional visualization:
+
+- `gear_sonic_deploy/image_server/image_client.py`
+- `gear_sonic_deploy/image_server/stream_smoke_test.py`
 
 Optional tools:
 
@@ -128,5 +168,5 @@ Recorded samples now support:
 - depth is stored as array data rather than video, by design
 - if the G1 system camera service occupies the D435, the custom image server
   cannot start until that service conflict is handled
-- the dataset exporter backend still lives in `decoupled_wbc`; this iteration
-  only did the minimal migration of the `gear_sonic_deploy` runtime helpers
+- the dataset layout is reference-compatible rather than a byte-for-byte clone
+  of `lerobot`, so downstream code should target the local parquet/mp4 format

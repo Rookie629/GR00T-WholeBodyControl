@@ -208,9 +208,11 @@ show_usage() {
     echo "  --obs-config PATH       Set the observation config file (default: policy/configs/example.yaml)"
     echo "  --planner PATH          Set the planner model path (default: planner/example.onnx)"
     echo "  --motion-data PATH      Set the motion data path (default: reference/example_motion/)"
-    echo "  --input-type TYPE       Set the input type (default: zmq_manager)"
-    echo "  --output-type TYPE      Set the output type (default: ros2)"
+    echo "  --input-type TYPE       Set the input type (default: manager)"
+    echo "  --output-type TYPE      Set the output type (default: all)"
     echo "  --zmq-host HOST         Set the ZMQ host (default: localhost)"
+    echo "  --enable-csv-logs       Enable CSV logging in g1_deploy_onnx_ref"
+    echo "  --logs-dir PATH         Optional CSV logs output directory"
     echo ""
     echo "Interface modes:"
     echo "  sim              Use loopback interface for simulation (MuJoCo)"
@@ -242,6 +244,8 @@ MOTION_DATA_DEFAULT="reference/example/"
 INPUT_TYPE_DEFAULT="manager"
 OUTPUT_TYPE_DEFAULT="all"
 ZMQ_HOST_DEFAULT="localhost"
+ENABLE_CSV_LOGS=false
+LOGS_DIR=""
 
 # Initialize with defaults (will be set after parsing)
 CHECKPOINT="$CHECKPOINT_DEFAULT"
@@ -313,6 +317,18 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             ZMQ_HOST="$2"
+            shift 2
+            ;;
+        --enable-csv-logs)
+            ENABLE_CSV_LOGS=true
+            shift
+            ;;
+        --logs-dir)
+            if [[ -z "$2" ]]; then
+                echo -e "${RED}Error: --logs-dir requires a path argument${NC}" >&2
+                exit 1
+            fi
+            LOGS_DIR="$2"
             shift 2
             ;;
         sim|real)
@@ -515,6 +531,10 @@ echo -e "  Planner:            ${GREEN}$PLANNER${NC}"
 echo -e "  Input Type:         ${GREEN}$INPUT_TYPE${NC}"
 echo -e "  Output Type:        ${GREEN}$OUTPUT_TYPE${NC}"
 echo -e "  ZMQ Host:           ${GREEN}$ZMQ_HOST${NC}"
+echo -e "  CSV Logs:           ${GREEN}$ENABLE_CSV_LOGS${NC}"
+if [[ -n "$LOGS_DIR" ]]; then
+echo -e "  Logs Dir:           ${GREEN}$LOGS_DIR${NC}"
+fi
 if [[ -n "$EXTRA_ARGS" ]]; then
 echo -e "  Extra Args:         ${GREEN}$EXTRA_ARGS${NC}"
 fi
@@ -529,7 +549,15 @@ echo -e "${BLUE}    --encoder-file $CHECKPOINT_ENCODER \\${NC}"
 echo -e "${BLUE}    --planner-file $PLANNER \\${NC}"
 echo -e "${BLUE}    --input-type $INPUT_TYPE \\${NC}"
 echo -e "${BLUE}    --output-type $OUTPUT_TYPE \\${NC}"
-echo -e "${BLUE}    --zmq-host $ZMQ_HOST${NC}"
+echo -e "${BLUE}    --zmq-host $ZMQ_HOST \\${NC}"
+if [[ "$ENABLE_CSV_LOGS" == true ]]; then
+echo -e "${BLUE}    --enable-csv-logs \\${NC}"
+fi
+if [[ -n "$LOGS_DIR" ]]; then
+echo -e "${BLUE}    --logs-dir $LOGS_DIR${NC}"
+else
+echo -e "${BLUE}${NC}"
+fi
 if [[ -n "$EXTRA_ARGS" ]]; then
 echo -e "${BLUE}    $EXTRA_ARGS${NC}"
 fi
@@ -553,22 +581,36 @@ if [[ "$confirm" =~ ^[Yy]$ ]] || [[ -z "$confirm" ]]; then
     
     # Build the command with optional extra args
     if [[ -n "$EXTRA_ARGS" ]]; then
-        just run g1_deploy_onnx_ref "$TARGET" "$CHECKPOINT_DECODER" "$MOTION_DATA" \
+        CMD=(just run g1_deploy_onnx_ref "$TARGET" "$CHECKPOINT_DECODER" "$MOTION_DATA" \
             --obs-config "$OBS_CONFIG" \
             --encoder-file "$CHECKPOINT_ENCODER" \
             --planner-file "$PLANNER" \
             --input-type "$INPUT_TYPE" \
             --output-type "$OUTPUT_TYPE" \
-            --zmq-host "$ZMQ_HOST" \
-            $EXTRA_ARGS
+            --zmq-host "$ZMQ_HOST")
+        if [[ "$ENABLE_CSV_LOGS" == true ]]; then
+            CMD+=(--enable-csv-logs)
+        fi
+        if [[ -n "$LOGS_DIR" ]]; then
+            CMD+=(--logs-dir "$LOGS_DIR")
+        fi
+        CMD+=($EXTRA_ARGS)
+        "${CMD[@]}"
     else
-        just run g1_deploy_onnx_ref "$TARGET" "$CHECKPOINT_DECODER" "$MOTION_DATA" \
+        CMD=(just run g1_deploy_onnx_ref "$TARGET" "$CHECKPOINT_DECODER" "$MOTION_DATA" \
             --obs-config "$OBS_CONFIG" \
             --encoder-file "$CHECKPOINT_ENCODER" \
             --planner-file "$PLANNER" \
             --input-type "$INPUT_TYPE" \
             --output-type "$OUTPUT_TYPE" \
-            --zmq-host "$ZMQ_HOST"
+            --zmq-host "$ZMQ_HOST")
+        if [[ "$ENABLE_CSV_LOGS" == true ]]; then
+            CMD+=(--enable-csv-logs)
+        fi
+        if [[ -n "$LOGS_DIR" ]]; then
+            CMD+=(--logs-dir "$LOGS_DIR")
+        fi
+        "${CMD[@]}"
     fi
 else
     echo ""

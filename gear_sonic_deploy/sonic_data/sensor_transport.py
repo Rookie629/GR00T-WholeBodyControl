@@ -69,20 +69,25 @@ class SensorServer:
 
 
 class SensorClient:
-    def start_client(self, server_ip: str, port: int) -> None:
+    def start_client(self, server_ip: str, port: int, timeout_ms: int | None = None) -> None:
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.SUB)
         self.socket.setsockopt_string(zmq.SUBSCRIBE, "")
         self.socket.setsockopt(zmq.CONFLATE, True)
         self.socket.setsockopt(zmq.RCVHWM, 3)
+        if timeout_ms is not None:
+            self.socket.setsockopt(zmq.RCVTIMEO, timeout_ms)
         self.socket.connect(f"tcp://{server_ip}:{port}")
 
     def stop_client(self) -> None:
         self.socket.close()
         self.context.term()
 
-    def receive_message(self) -> dict[str, Any]:
-        packed = self.socket.recv()
+    def receive_message(self) -> dict[str, Any] | None:
+        try:
+            packed = self.socket.recv()
+        except zmq.Again:
+            return None
         return msgpack.unpackb(packed, object_hook=m.decode)
 
 

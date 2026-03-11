@@ -61,26 +61,60 @@ def main() -> None:
     parser.add_argument("--state-topic", default=STATE_TOPIC_NAME)
     parser.add_argument("--max-depth-mm", type=int, default=3000)
     parser.add_argument("--window-name", default="G1 Stream Smoke Test")
+    parser.add_argument(
+        "--timeout-ms",
+        type=int,
+        default=100,
+        help="Camera receive timeout in milliseconds so the loop can exit cleanly.",
+    )
+    parser.add_argument(
+        "--max-seconds",
+        type=float,
+        default=0.0,
+        help="Automatically stop after this many seconds. 0 disables the limit.",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        default=0,
+        help="Automatically stop after this many received image frames. 0 disables the limit.",
+    )
     args = parser.parse_args()
 
-    camera = ComposedCameraClientSensor(server_ip=args.camera_host, port=args.camera_port)
+    camera = ComposedCameraClientSensor(
+        server_ip=args.camera_host,
+        port=args.camera_port,
+        timeout_ms=args.timeout_ms,
+    )
     state_sub = ROSMsgSubscriber(args.state_topic)
 
     latest_state = None
     state_count = 0
     image_count = 0
+    total_image_frames = 0
     state_hz = 0.0
     image_hz = 0.0
     stats_t0 = time.monotonic()
+    started_at = time.monotonic()
 
     print(f"Listening camera tcp://{args.camera_host}:{args.camera_port}")
     print(f"Listening state topic {args.state_topic}")
-    print("Press q in the OpenCV window to quit.")
+    print("Press q or Esc in the OpenCV window to quit.")
+    if args.max_seconds > 0:
+        print(f"Auto-stop after {args.max_seconds:.1f} seconds.")
+    if args.max_frames > 0:
+        print(f"Auto-stop after {args.max_frames} image frames.")
 
     try:
         while ROSManager.ok():
+            if args.max_seconds > 0 and (time.monotonic() - started_at) >= args.max_seconds:
+                print("Stopping smoke test: reached --max-seconds.")
+                break
+            if args.max_frames > 0 and total_image_frames >= args.max_frames:
+                print("Stopping smoke test: reached --max-frames.")
+                break
+
             image_msg = camera.read()
-            image_count += 1
 
             state_msg = state_sub.get_msg()
             if state_msg is not None:
@@ -95,6 +129,12 @@ def main() -> None:
                 image_count = 0
                 state_count = 0
                 stats_t0 = now
+
+            if image_msg is None:
+                continue
+
+            image_count += 1
+            total_image_frames += 1
 
             images = image_msg["images"]
             timestamps = image_msg["timestamps"]
@@ -139,8 +179,12 @@ def main() -> None:
             canvas = draw_text(canvas, overlay_lines)
 
             cv2.imshow(args.window_name, canvas)
+            if cv2.getWindowProperty(args.window_name, cv2.WND_PROP_VISIBLE) < 1:
+                print("Stopping smoke test: window closed.")
+                break
             key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
+            if key in (ord("q"), 27):
+                print("Stopping smoke test: quit key pressed.")
                 break
     except KeyboardInterrupt:
         pass

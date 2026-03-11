@@ -15,7 +15,7 @@ This is the camera-facing half of the end-to-end collection pipeline.
 ## Changes In This Work
 
 The original `image_server.py` only exposed the raw RealSense stream. This work
-added the pieces needed to use it in the existing exporter path, and also moved
+added the pieces needed to use it in the sonic-side exporter path, and also moved
 the bridge/runtime helper dependencies under `gear_sonic_deploy/sonic_data`:
 
 - `composed_camera_bridge.py`
@@ -34,7 +34,7 @@ the bridge/runtime helper dependencies under `gear_sonic_deploy/sonic_data`:
 - `requirements.txt`
   - minimal pip dependencies for this folder's Python tools
 - `../sonic_data/`
-  - local ROS topic, transport, keyboard, and bridged camera client helpers
+  - local ROS topic, transport, keyboard, exporter, and GUI helpers
 
 ## Directory Roles
 
@@ -68,6 +68,14 @@ Recommended ports:
 
 ## Typical Commands
 
+Collector-side environment:
+
+```bash
+cd /home/yangke/KY/GR00T-WholeBodyControl
+source .venv_teleop/bin/activate
+source /opt/ros/humble/setup.bash
+```
+
 ### 1. On G1
 
 ```bash
@@ -84,13 +92,39 @@ python3 gear_sonic_deploy/image_server/composed_camera_bridge.py \
   --include-depth
 ```
 
-### 3. Quick visualization
+### 3. Visualize raw D435 stream
 
 ```bash
+python3 gear_sonic_deploy/image_server/image_client.py \
+  --ip <G1_IP> \
+  --port 5555
+```
+
+### 4. Visualize bridged stream
+
+```bash
+source /opt/ros/humble/setup.bash
 python3 gear_sonic_deploy/image_server/stream_smoke_test.py \
   --camera-host 127.0.0.1 \
   --camera-port 5560
 ```
+
+For a bounded test that exits on its own:
+
+```bash
+source /opt/ros/humble/setup.bash
+python3 gear_sonic_deploy/image_server/stream_smoke_test.py \
+  --camera-host 127.0.0.1 \
+  --camera-port 5560 \
+  --max-seconds 10
+```
+
+Exit options:
+
+- press `q`
+- press `Esc`
+- close the OpenCV window
+- use `--max-seconds` or `--max-frames` for automatic stop
 
 ## Output Contract
 
@@ -99,18 +133,22 @@ The bridge publishes these image keys:
 - `ego_view`
 - `ego_view_depth` when `--include-depth` is enabled
 
-Downstream, those keys are consumed by the exporter path. The helper transport
+Downstream, those keys are consumed by the sonic exporter path. The helper transport
 layer now lives locally under:
 
 - `gear_sonic_deploy/sonic_data/`
 
-The current dataset writer backend still lives in:
-
-- `decoupled_wbc/control/main/teleop/run_g1_data_exporter.py`
-
-The recommended entrypoint from the `gear_sonic_deploy` side is now:
+The recommended collector entrypoints from the `gear_sonic_deploy` side are now:
 
 - `gear_sonic_deploy/sonic_data/run_g1_data_exporter.py`
+- `gear_sonic_deploy/sonic_data/gui/main.py`
+
+Typical collector flow:
+
+1. Verify raw stream with `image_client.py` if needed.
+2. Start `composed_camera_bridge.py`.
+3. Verify bridged stream with `stream_smoke_test.py` if needed.
+4. Start either the CLI exporter or the `tkinter` GUI.
 
 ## Known Limits
 
@@ -118,5 +156,5 @@ The recommended entrypoint from the `gear_sonic_deploy` side is now:
 - depth is forwarded as `uint16` array data, not encoded as video
 - if the G1 system service is already using the D435, `image_server.py` cannot
   open the device until that conflict is resolved
-- the LeRobot exporter backend itself has not yet been fully migrated out of
-  `decoupled_wbc`
+- the G1-side `image_server.py` is still a separate process and is not launched
+  remotely by the collector GUI

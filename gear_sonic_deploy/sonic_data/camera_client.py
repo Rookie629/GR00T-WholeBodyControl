@@ -8,11 +8,13 @@ from gear_sonic_deploy.sonic_data.sensor_transport import ImageMessageSchema, Se
 class ComposedCameraClientSensor(SensorClient):
     """Minimal client for the bridged typed-image stream."""
 
-    def __init__(self, server_ip: str, port: int):
-        self.start_client(server_ip, port)
+    def __init__(self, server_ip: str, port: int, timeout_ms: int | None = None):
+        self.start_client(server_ip, port, timeout_ms=timeout_ms)
 
-    def read(self) -> dict[str, Any]:
+    def read(self) -> dict[str, Any] | None:
         payload = self.receive_message()
+        if payload is None:
+            return None
         return ImageMessageSchema.deserialize(payload).asdict()
 
     def close(self) -> None:

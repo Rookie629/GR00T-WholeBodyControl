@@ -30,3 +30,25 @@ class KeyboardListenerSubscriber:
         data = self._data
         self._data = None
         return data
+
+
+class KeyboardListenerPublisher:
+    def __init__(
+        self,
+        topic_name: str = KEYBOARD_LISTENER_TOPIC_NAME,
+        node_name: str = "keyboard_listener_publisher",
+    ):
+        assert rclpy.ok(), "Expected ROS2 to be initialized in this process..."
+        executor = rclpy.get_global_executor()
+        nodes = executor.get_nodes()
+        if nodes:
+            self.node = nodes[0]
+        else:
+            self.node = rclpy.create_node(node_name)
+            executor.add_node(self.node)
+        self.publisher = self.node.create_publisher(RosStringMsg, topic_name, 1)
+
+    def publish(self, key: str) -> None:
+        msg = RosStringMsg()
+        msg.data = key
+        self.publisher.publish(msg)

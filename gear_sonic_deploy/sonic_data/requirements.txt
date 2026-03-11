@@ -1,0 +1,20 @@
+# Python dependencies for the collector-side `gear_sonic_deploy/sonic_data`
+# runtime. The exporter now uses a local parquet/mp4 writer modeled after the
+# reference dataset metadata layout under `G1_WB_Dex5_Collect_Clothes/`.
+#
+# ROS2 packages such as `rclpy`, `std_msgs`, `std_srvs`, and `cv_bridge`
+# should come from the system ROS installation (for example `/opt/ros/humble`),
+# not from pip.
+
+numpy==1.26.4
+tyro
+PyYAML
+msgpack
+msgpack-numpy
+pyzmq
+opencv-python
+av>=14.2
+pyarrow
+Pillow
+pyttsx3==2.90
+sshkeyboard

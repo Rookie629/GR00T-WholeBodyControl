@@ -16,10 +16,11 @@ if str(repo_root) not in sys.path:
 
 import tyro
 
-from decoupled_wbc.control.main.teleop.configs.configs import DataExporterConfig
-from decoupled_wbc.control.main.teleop.run_g1_data_exporter import main
+from gear_sonic_deploy.sonic_data.collector import main, prepare_interactive_config
+from gear_sonic_deploy.sonic_data.configs import DataExporterConfig
 
 
 if __name__ == "__main__":
     config = tyro.cli(DataExporterConfig)
+    config = prepare_interactive_config(config)
     main(config)

@@ -8,7 +8,6 @@ collection pipeline built from:
 - `gear_sonic_deploy`
 - `gear_sonic_deploy/image_server`
 - `gear_sonic_deploy/sonic_data`
-- `decoupled_wbc` exporter backend
 
 The pipeline collects:
 
@@ -102,13 +101,9 @@ Purpose:
 
 ### 4. Dataset exporter entrypoint
 
-User-facing wrapper:
+User-facing entrypoint:
 
 - [gear_sonic_deploy/sonic_data/run_g1_data_exporter.py](/home/yangke/KY/GR00T-WholeBodyControl/gear_sonic_deploy/sonic_data/run_g1_data_exporter.py)
-
-Current backend:
-
-- [decoupled_wbc/control/main/teleop/run_g1_data_exporter.py](/home/yangke/KY/GR00T-WholeBodyControl/decoupled_wbc/control/main/teleop/run_g1_data_exporter.py)
 
 Purpose:
 
@@ -117,7 +112,27 @@ Purpose:
 - build frame dictionaries
 - save episodes into the dataset
 
-### 5. Optional sidecar recorder
+The full collector/exporter backend now lives in:
+
+- `gear_sonic_deploy/sonic_data/`
+
+### 5. Unified collector GUI
+
+File:
+
+- [gear_sonic_deploy/sonic_data/gui/main.py](/home/yangke/KY/GR00T-WholeBodyControl/gear_sonic_deploy/sonic_data/gui/main.py)
+
+Purpose:
+
+- start and stop bridge and exporter from one window
+- preview RGB and depth in the same collector window
+- publish episode-control commands without manual `ros2 topic pub`
+- keep standalone test tools available as separate windows
+
+Implementation:
+
+- built with standard-library `tkinter`
+### 6. Optional sidecar recorder
 
 File:
 
@@ -131,6 +146,16 @@ Purpose:
 This is optional. The main dataset already stores depth.
 
 ## Runtime Logic
+
+### Collector environment
+
+All collector-side validation and runtime commands should use:
+
+```bash
+cd /home/yangke/KY/GR00T-WholeBodyControl
+source .venv_teleop/bin/activate
+source /opt/ros/humble/setup.bash
+```
 
 ### Step 1. Start robot deployment
 
@@ -165,8 +190,9 @@ Effect:
 On the G1:
 
 ```bash
-cd /home/yangke/KY/GR00T-WholeBodyControl
-python3 gear_sonic_deploy/image_server/image_server.py
+rs-enumerate-devices
+cd Project/image_server/
+python3 image_server.py
 ```
 
 Effect:
@@ -191,11 +217,43 @@ Effect:
 - depth is forwarded as `ego_view_depth`
 - the local typed image stream becomes available to the exporter
 
-### Step 5. Start exporter
+### Step 4.5. Optional image visualization checks
+
+#### Check raw D435 stream from G1
+
+```bash
+cd /home/yangke/KY/GR00T-WholeBodyControl
+python3 gear_sonic_deploy/image_server/image_client.py \
+  --ip <G1_IP> \
+  --port 5555
+```
+
+Effect:
+
+- directly visualizes the raw RGBD stream coming from `image_server.py`
+- useful for confirming the G1-side camera and network path are healthy before
+  testing the bridge
+
+#### Check bridged image stream
 
 ```bash
 cd /home/yangke/KY/GR00T-WholeBodyControl
 source /opt/ros/humble/setup.bash
+python3 gear_sonic_deploy/image_server/stream_smoke_test.py \
+  --camera-host 127.0.0.1 \
+  --camera-port 5560
+```
+
+Effect:
+
+- visualizes bridged `ego_view` and `ego_view_depth`
+- overlays `camera_hz` and `state_hz`
+- confirms both the image bridge and ROS2 robot state path are alive
+- exits with `q`, `Esc`, window close, or automatically via `--max-seconds` / `--max-frames`
+
+### Step 5. Start exporter
+
+```bash
 python3 gear_sonic_deploy/sonic_data/run_g1_data_exporter.py \
   --camera_host 127.0.0.1 \
   --camera_port 5560 \
@@ -212,6 +270,41 @@ Effect:
   - latest bridged camera message
 - once recording starts, it writes frame-by-frame data into the dataset
 
+### Step 5A. Start the unified GUI instead of manual bridge/exporter launch
+
+```bash
+python3 gear_sonic_deploy/sonic_data/gui/main.py
+```
+
+Effect:
+
+- one window launches the bridge and exporter
+- one window previews RGB and depth
+- one window publishes episode control commands
+
+Recommended GUI flow:
+
+1. Fill `G1 IP`, `Dataset`, `Task`, and output directory.
+2. Click `Start All`.
+3. Wait for RGB/depth preview to update.
+4. Click `Record / Stop Save` to start.
+5. Click `Record / Stop Save` again to save.
+6. Click `Discard` to drop the current episode.
+
+### Step 5.5. Optional unified GUI
+
+```bash
+cd /home/yangke/KY/GR00T-WholeBodyControl
+source /opt/ros/humble/setup.bash
+python3 gear_sonic_deploy/sonic_data/gui/main.py
+```
+
+Effect:
+
+- collector-side launch is reduced to a single window
+- `composed_camera_bridge.py` and `run_g1_data_exporter.py` can be started from the GUI
+- RGBD preview and episode controls are embedded in the same window
+- raw and bridged stream tests remain available as separate scripts
 ### Step 6. Optional sidecar
 
 ```bash
@@ -317,20 +410,18 @@ Decoded robot state print:
 
 ## Current Migration Boundary
 
-This pipeline is already partly migrated into `gear_sonic_deploy`:
+This pipeline is now fully migrated into `gear_sonic_deploy` for collector-side
+runtime and dataset export.
 
-- image transport helpers are local under `gear_sonic_deploy/sonic_data`
-- image-side runtime scripts use local helpers
-- exporter has a local wrapper entrypoint
+The exporter no longer depends on `lerobot`. It writes a local dataset with the
+same top-level structure as the reference `G1_WB_Dex5_Collect_Clothes` dataset:
 
-Still not fully migrated:
-
-- the main LeRobot exporter backend still lives in `decoupled_wbc`
-
-So the current architecture is:
-
-- `gear_sonic_deploy` owns camera/runtime helper flow
-- `decoupled_wbc` still owns the dataset writer backend
+- `meta/info.json`
+- `meta/stats.json`
+- `meta/tasks.parquet`
+- `meta/episodes/chunk-*/file-000.parquet`
+- `data/chunk-*/file-*.parquet`
+- `videos/<video_key>/chunk-*/file-*.mp4`
 
 ## Common Failure Points
 

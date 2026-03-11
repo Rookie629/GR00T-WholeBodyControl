@@ -7,8 +7,11 @@ import yaml
 
 import decoupled_wbc
 from decoupled_wbc.control.main.config_template import ArgsConfig as ArgsConfigTemplate
-from decoupled_wbc.control.policy.wbc_policy_factory import WBC_VERSIONS
 from decoupled_wbc.control.utils.network_utils import resolve_interface
+
+# Keep exporter/config CLI import light. Importing the full policy factory pulls in
+# gymnasium/onnxruntime policy dependencies even when we only need config parsing.
+WBC_VERSIONS = ("gear_wbc",)
 
 
 def override_wbc_config(
