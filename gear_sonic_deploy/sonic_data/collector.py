@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime
-import threading
 import time
 
 import numpy as np
@@ -20,7 +19,7 @@ from gear_sonic_deploy.sonic_data.dataset import (
 from gear_sonic_deploy.sonic_data.episode_state import EpisodeState
 from gear_sonic_deploy.sonic_data.g1_profile import G1DataProfile
 from gear_sonic_deploy.sonic_data.keyboard import KeyboardListenerSubscriber
-from gear_sonic_deploy.sonic_data.ros_utils import ROSMsgSubscriber, ROSServiceClient
+from gear_sonic_deploy.sonic_data.ros_utils import ROSMsgSubscriber
 from gear_sonic_deploy.sonic_data.telemetry import Telemetry
 from gear_sonic_deploy.sonic_data.text_to_speech import TextToSpeech
 from gear_sonic_deploy.sonic_data.topics import ROBOT_CONFIG_TOPIC, STATE_TOPIC_NAME
@@ -86,19 +85,19 @@ class Gr00tDataCollector:
         self.data_exporter = data_exporter
         self.node = node
 
-        thread = threading.Thread(target=rclpy.spin, args=(self.node,), daemon=True)
-        thread.start()
-        time.sleep(0.5)
-
         self._episode_state = EpisodeState()
         self._keyboard_listener = KeyboardListenerSubscriber()
         self._state_subscriber = ROSMsgSubscriber(state_topic_name)
-        self._image_subscriber = ComposedCameraClientSensor(server_ip=camera_host, port=camera_port)
+        self._image_subscriber = ComposedCameraClientSensor(
+            server_ip=camera_host, port=camera_port, timeout_ms=100
+        )
         self.rate = self.node.create_rate(self.frequency)
 
         self.obs_act_buffer = deque(maxlen=100)
         self.latest_image_msg = None
         self.latest_proprio_msg = None
+        self._logged_first_proprio = False
+        self._logged_first_image = False
 
         self.state_polling_rate = 1 / state_act_msg_frequency
         self.last_state_poll_time = time.monotonic()
@@ -107,6 +106,99 @@ class Gr00tDataCollector:
         self.timing_threshold_monitor = TimingThresholdMonitor()
 
         print(f"Recording to {self.data_exporter.meta.root}")
+
+    def _try_set_latest_proprio(self, msg: dict | None) -> bool:
+        if msg is None:
+            return False
+
+        normalized_msg = self._normalize_raw_state_message(msg)
+        if normalized_msg is None:
+            self._print_and_say(
+                "State message missing required keys for export. "
+                f"Available keys: {sorted(msg.keys())}",
+                say=False,
+            )
+            return False
+
+        self.latest_proprio_msg = normalized_msg
+        if not self._logged_first_proprio:
+            self._logged_first_proprio = True
+            self._print_and_say(
+                "Received first proprio message "
+                f"with raw keys: {sorted(msg.keys())}",
+                say=False,
+            )
+        return True
+
+    @staticmethod
+    def _normalize_raw_state_message(msg: dict) -> dict | None:
+        if not isinstance(msg, dict):
+            return None
+
+        # Already normalized by an upstream adapter.
+        if "q" in msg and "action" in msg and "timestamps" in msg:
+            return msg
+
+        required_keys = (
+            "body_q",
+            "left_hand_q",
+            "right_hand_q",
+            "last_action",
+            "last_left_hand_action",
+            "last_right_hand_action",
+            "ros_timestamp",
+        )
+        if not all(key in msg for key in required_keys):
+            return None
+
+        body_q = np.asarray(msg["body_q"], dtype=np.float64)
+        left_hand_q = np.asarray(msg["left_hand_q"], dtype=np.float64)
+        right_hand_q = np.asarray(msg["right_hand_q"], dtype=np.float64)
+        body_action = np.asarray(msg["last_action"], dtype=np.float64)
+        left_hand_action = np.asarray(msg["last_left_hand_action"], dtype=np.float64)
+        right_hand_action = np.asarray(msg["last_right_hand_action"], dtype=np.float64)
+
+        if (
+            body_q.shape != (29,)
+            or left_hand_q.shape != (7,)
+            or right_hand_q.shape != (7,)
+            or body_action.shape != (29,)
+            or left_hand_action.shape != (7,)
+            or right_hand_action.shape != (7,)
+        ):
+            return None
+
+        # Raw SONIC body order is:
+        # left_leg(6), right_leg(6), waist(3), left_arm(7), right_arm(7).
+        # Dataset order inserts hands between the left/right arms.
+        q = np.concatenate(
+            [
+                body_q[:22],
+                left_hand_q,
+                body_q[22:29],
+                right_hand_q,
+            ]
+        )
+        action = np.concatenate(
+            [
+                body_action[:22],
+                left_hand_action,
+                body_action[22:29],
+                right_hand_action,
+            ]
+        )
+
+        normalized = {
+            "q": q,
+            "action": action,
+            "wrist_pose": np.zeros(14, dtype=np.float64),
+            "action.eef": np.zeros(14, dtype=np.float64),
+            "navigate_command": np.zeros(3, dtype=np.float64),
+            "base_height_command": 0.0,
+            "timestamps": {"proprio": float(msg["ros_timestamp"])},
+            "raw_state": msg,
+        }
+        return normalized
 
     @property
     def current_episode_index(self):
@@ -121,6 +213,7 @@ class Gr00tDataCollector:
     def _check_keyboard_input(self):
         key = self._keyboard_listener.read_msg()
         if key == "c":
+            self._print_and_say("Received keyboard input: c", say=False)
             self._episode_state.change_state()
             if self._episode_state.get_state() == self._episode_state.RECORDING:
                 self._print_and_say(f"Started recording {self.current_episode_index}")
@@ -129,6 +222,7 @@ class Gr00tDataCollector:
             elif self._episode_state.get_state() == self._episode_state.IDLE:
                 self._print_and_say("Saved episode and back to idle state")
         elif key == "x":
+            self._print_and_say("Received keyboard input: x", say=False)
             if self._episode_state.get_state() == self._episode_state.RECORDING:
                 self.data_exporter.save_episode_as_discarded()
                 self._episode_state.reset_state()
@@ -213,18 +307,34 @@ class Gr00tDataCollector:
 
     def run(self):
         try:
+            if self.latest_proprio_msg is None:
+                startup_msg = self._state_subscriber.wait_for_msg(timeout_sec=2.0, poll_sec=0.05)
+                if not self._try_set_latest_proprio(startup_msg):
+                    self._print_and_say(
+                        "Did not receive a usable proprio message during exporter startup.",
+                        say=False,
+                    )
+
             while rclpy.ok():
                 t_start = time.monotonic()
                 with self.telemetry.timer("total_loop"):
                     with self.telemetry.timer("poll_state"):
                         msg = self._state_subscriber.get_msg()
-                        if msg is not None:
-                            self.latest_proprio_msg = msg
+                        if msg is None and self.latest_proprio_msg is None:
+                            msg = self._state_subscriber.wait_for_msg(timeout_sec=0.1, poll_sec=0.02)
+                        self._try_set_latest_proprio(msg)
 
                     with self.telemetry.timer("poll_image"):
                         msg = self._image_subscriber.read()
                         if msg is not None:
                             self.latest_image_msg = msg
+                            if not self._logged_first_image:
+                                self._logged_first_image = True
+                                self._print_and_say(
+                                    "Received first image message "
+                                    f"with image keys: {sorted(msg['images'].keys())}",
+                                    say=False,
+                                )
 
                     with self.telemetry.timer("check_keyboard"):
                         self._check_keyboard_input()
@@ -279,8 +389,17 @@ def main(config: DataExporterConfig):
     else:
         data_collection_info = DataCollectionInfo()
 
-    robot_config_client = ROSServiceClient(ROBOT_CONFIG_TOPIC)
-    robot_config = robot_config_client.get_config()
+    robot_config_subscriber = ROSMsgSubscriber(
+        ROBOT_CONFIG_TOPIC,
+        transient_local=True,
+        reliable=True,
+    )
+    robot_config = robot_config_subscriber.wait_for_msg(timeout_sec=5.0)
+    if robot_config is None:
+        raise RuntimeError(
+            f"Timed out waiting for robot config topic '{ROBOT_CONFIG_TOPIC}'. "
+            "Ensure gear_sonic_deploy is running with --output-type ros2 or all."
+        )
 
     data_exporter = Gr00tDataExporter.create(
         save_root=f"{config.root_output_dir}/{config.dataset_name}",

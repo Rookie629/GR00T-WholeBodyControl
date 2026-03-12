@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import threading
@@ -23,14 +24,20 @@ class ManagedProcess:
     def start(self, program: str, arguments: list[str], cwd: str | Path | None = None) -> None:
         if self.is_running():
             return
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        command = [program, *arguments]
+        if Path(program).name.startswith("python"):
+            command = [program, "-u", *arguments]
         self.process = subprocess.Popen(
-            [program, *arguments],
+            command,
             cwd=str(cwd) if cwd is not None else None,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
             text=True,
             bufsize=1,
+            env=env,
         )
         self._on_state_change(self.name, "running")
         self._threads = [
@@ -56,13 +63,19 @@ class ManagedProcess:
         return self.process is not None and self.process.poll() is None
 
     def start_detached(self, program: str, arguments: list[str], cwd: str | Path | None = None) -> None:
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        command = [program, *arguments]
+        if Path(program).name.startswith("python"):
+            command = [program, "-u", *arguments]
         subprocess.Popen(
-            [program, *arguments],
+            command,
             cwd=str(cwd) if cwd is not None else None,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
         )
 
     def _pump_stream(self, stream) -> None:

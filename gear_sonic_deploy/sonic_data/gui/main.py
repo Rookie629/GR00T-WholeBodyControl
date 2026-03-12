@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+import os
 from pathlib import Path
+import pprint
 import queue
 import sys
 import threading
@@ -158,10 +160,17 @@ class MainWindow:
             on_output=self.enqueue_log,
             on_state_change=self.enqueue_state,
         )
+        self.proprio_test_process = ManagedProcess(
+            "proprio-test",
+            on_output=self.enqueue_log,
+            on_state_change=self.enqueue_state,
+        )
 
         self.rgb_photo = None
         self.depth_photo = None
         self._recording_toggle = False
+        self._latest_state = None
+        self._first_state = None
 
         self._build_ui()
 
@@ -217,6 +226,8 @@ class MainWindow:
             ("Start All", self.start_all),
             ("Record / Stop Save", self.toggle_record),
             ("Discard", self.discard_episode),
+            ("Print State", self.print_state_snapshot),
+            ("Test Proprio", self.open_proprio_test),
             ("Open Raw Test", self.open_raw_test),
             ("Open Bridge Test", self.open_bridge_test),
         ]
@@ -270,6 +281,7 @@ class MainWindow:
         ]
         if self.add_depth.get():
             args.append("--include-depth")
+        self._log_launch_context("bridge", args)
         self.bridge_process.start(sys.executable, args, cwd=self.repo_root)
 
     def _resolved_dataset_name(self) -> str:
@@ -302,21 +314,42 @@ class MainWindow:
             args.append("--no-add_stereo_camera")
         if self.add_depth.get():
             args.append("--add_depth_camera")
+        self._log_launch_context("exporter", args)
         self.exporter_process.start(sys.executable, args, cwd=self.repo_root)
 
     def start_all(self) -> None:
         self.start_bridge()
         self.root.after(500, self.start_exporter)
 
+    def _publish_keyboard_command(self, key: str, repeats: int = 8, spacing_ms: int = 250) -> None:
+        for index in range(repeats):
+            self.root.after(index * spacing_ms, lambda value=key: self.keyboard_pub.publish(value))
+        self.append_log("gui", f"published /Gr00tKeyboardListener='{key}' x{repeats}")
+
     def toggle_record(self) -> None:
-        self.keyboard_pub.publish("c")
+        if not self.exporter_process.is_running():
+            self.append_log("gui", "exporter is not running; record command still published")
+        self._publish_keyboard_command("c")
         self._recording_toggle = not self._recording_toggle
         self.info_status.set("state: recording" if self._recording_toggle else "state: saving")
 
     def discard_episode(self) -> None:
-        self.keyboard_pub.publish("x")
+        self._publish_keyboard_command("x")
         self._recording_toggle = False
         self.info_status.set("state: discarded")
+
+    def print_state_snapshot(self) -> None:
+        if self._first_state is None and self._latest_state is None:
+            self.append_log("gui", "no robot state received yet")
+            return
+
+        if self._first_state is not None:
+            self.append_log("gui", "first state frame:")
+            self.append_log("gui", pprint.pformat(self._first_state, sort_dicts=False))
+
+        if self._latest_state is not None:
+            self.append_log("gui", "latest state frame:")
+            self.append_log("gui", pprint.pformat(self._latest_state, sort_dicts=False))
 
     def open_raw_test(self) -> None:
         args = [
@@ -338,6 +371,30 @@ class MainWindow:
         ]
         self.bridge_test_process.start_detached(sys.executable, args, cwd=self.repo_root)
 
+    def open_proprio_test(self) -> None:
+        args = [
+            str(self.repo_root / "gear_sonic_deploy/image_server/print_robot_state.py"),
+            "--once",
+        ]
+        self._log_launch_context("proprio-test", args)
+        self.proprio_test_process.start(sys.executable, args, cwd=self.repo_root)
+
+    def _log_launch_context(self, name: str, args: list[str]) -> None:
+        command = " ".join([sys.executable, *args])
+        env_summary = {
+            key: os.environ.get(key, "")
+            for key in (
+                "ROS_DOMAIN_ID",
+                "RMW_IMPLEMENTATION",
+                "CYCLONEDDS_URI",
+                "AMENT_PREFIX_PATH",
+                "PYTHONPATH",
+            )
+            if os.environ.get(key)
+        }
+        self.append_log("gui", f"starting {name}: {command}")
+        self.append_log("gui", f"{name} env: {env_summary if env_summary else '{}'}")
+
     def _to_photo(self, image_bgr: np.ndarray, width: int = 480) -> ImageTk.PhotoImage:
         rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb)
@@ -354,6 +411,9 @@ class MainWindow:
         if state is None:
             self.info_status.set(f"state: waiting | image_keys={image_keys}")
         else:
+            self._latest_state = state
+            if self._first_state is None:
+                self._first_state = state
             q_dim = len(state.get("q", []))
             action_dim = len(state.get("action", []))
             navigate = state.get("navigate_command")

@@ -15,7 +15,7 @@ repo_root = Path(__file__).resolve().parents[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-from gear_sonic_deploy.sonic_data.ros_utils import ROSManager, ROSMsgSubscriber, ROSServiceClient
+from gear_sonic_deploy.sonic_data.ros_utils import ROSManager, ROSMsgSubscriber
 from gear_sonic_deploy.sonic_data.topics import ROBOT_CONFIG_TOPIC, STATE_TOPIC_NAME
 
 
@@ -44,8 +44,14 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.show_config:
-        client = ROSServiceClient(ROBOT_CONFIG_TOPIC)
-        config = client.get_config()
+        config_subscriber = ROSMsgSubscriber(
+            ROBOT_CONFIG_TOPIC,
+            transient_local=True,
+            reliable=True,
+        )
+        config = config_subscriber.wait_for_msg(timeout_sec=5.0)
+        if config is None:
+            raise RuntimeError(f"Timed out waiting for topic {ROBOT_CONFIG_TOPIC}")
         print("robot_config:")
         pprint.pprint(config, sort_dicts=False)
 

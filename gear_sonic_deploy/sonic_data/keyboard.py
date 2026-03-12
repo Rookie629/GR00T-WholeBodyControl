@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from collections import deque
+import threading
+
 import rclpy
 from std_msgs.msg import String as RosStringMsg
 
+from gear_sonic_deploy.sonic_data.ros_utils import ROSManager
 from gear_sonic_deploy.sonic_data.topics import KEYBOARD_LISTENER_TOPIC_NAME
 
 
@@ -13,23 +17,20 @@ class KeyboardListenerSubscriber:
         node_name: str = "keyboard_listener_subscriber",
     ):
         assert rclpy.ok(), "Expected ROS2 to be initialized in this process..."
-        executor = rclpy.get_global_executor()
-        nodes = executor.get_nodes()
-        if nodes:
-            self.node = nodes[0]
-        else:
-            self.node = rclpy.create_node(node_name)
-            executor.add_node(self.node)
+        self.node = ROSManager(node_name=node_name).node
         self.subscriber = self.node.create_subscription(RosStringMsg, topic_name, self._callback, 1)
-        self._data = None
+        self._queue = deque()
+        self._lock = threading.Lock()
 
     def _callback(self, msg: RosStringMsg) -> None:
-        self._data = msg.data
+        with self._lock:
+            self._queue.append(msg.data)
 
     def read_msg(self):
-        data = self._data
-        self._data = None
-        return data
+        with self._lock:
+            if not self._queue:
+                return None
+            return self._queue.popleft()
 
 
 class KeyboardListenerPublisher:
@@ -39,13 +40,7 @@ class KeyboardListenerPublisher:
         node_name: str = "keyboard_listener_publisher",
     ):
         assert rclpy.ok(), "Expected ROS2 to be initialized in this process..."
-        executor = rclpy.get_global_executor()
-        nodes = executor.get_nodes()
-        if nodes:
-            self.node = nodes[0]
-        else:
-            self.node = rclpy.create_node(node_name)
-            executor.add_node(self.node)
+        self.node = ROSManager(node_name=node_name).node
         self.publisher = self.node.create_publisher(RosStringMsg, topic_name, 1)
 
     def publish(self, key: str) -> None:
