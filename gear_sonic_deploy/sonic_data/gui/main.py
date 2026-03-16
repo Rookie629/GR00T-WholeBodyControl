@@ -321,7 +321,7 @@ class MainWindow:
         self.start_bridge()
         self.root.after(500, self.start_exporter)
 
-    def _publish_keyboard_command(self, key: str, repeats: int = 8, spacing_ms: int = 250) -> None:
+    def _publish_keyboard_command(self, key: str, repeats: int = 1, spacing_ms: int = 250) -> None:
         for index in range(repeats):
             self.root.after(index * spacing_ms, lambda value=key: self.keyboard_pub.publish(value))
         self.append_log("gui", f"published /Gr00tKeyboardListener='{key}' x{repeats}")

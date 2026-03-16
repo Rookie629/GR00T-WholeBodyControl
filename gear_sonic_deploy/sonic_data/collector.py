@@ -91,7 +91,6 @@ class Gr00tDataCollector:
         self._image_subscriber = ComposedCameraClientSensor(
             server_ip=camera_host, port=camera_port, timeout_ms=100
         )
-        self.rate = self.node.create_rate(self.frequency)
 
         self.obs_act_buffer = deque(maxlen=100)
         self.latest_image_msg = None
@@ -344,7 +343,10 @@ class Gr00tDataCollector:
 
                     end_time = time.monotonic()
 
-                self.rate.sleep()
+                target_period = 1 / self.frequency
+                sleep_dt = max(0.0, target_period - (end_time - t_start))
+                if sleep_dt > 0.0:
+                    time.sleep(sleep_dt)
                 if (end_time - t_start) > (1 / self.frequency):
                     self.telemetry.log_timing_info(
                         context="Data Exporter Loop Missed", threshold=0.001

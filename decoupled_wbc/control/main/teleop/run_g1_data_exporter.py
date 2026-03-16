@@ -126,6 +126,7 @@ class Gr00tDataCollector:
 
     def _check_keyboard_input(self):
         key = self._keyboard_listener.read_msg()
+        # print(f"Keyboard input: {key}")  # Debug print for keyboard input
         if key == "c":
             self._episode_state.change_state()
             if self._episode_state.get_state() == self._episode_state.RECORDING:

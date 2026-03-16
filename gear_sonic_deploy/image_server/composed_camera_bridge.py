@@ -8,10 +8,13 @@ from pathlib import Path
 import sys
 import time
 
+import cv2
+
 repo_root = Path(__file__).resolve().parents[2]
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
+from gear_sonic_deploy.sonic_data.constants import RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH
 from gear_sonic_deploy.sonic_data.sensor_transport import ImageMessageSchema, SensorServer
 
 from image_client import ImageClient
@@ -34,6 +37,20 @@ class ComposedCameraBridge(SensorServer):
         self.frames_forwarded = 0
         self.include_depth = include_depth
 
+    @staticmethod
+    def _resize_color(color_rgb):
+        expected_size = (RS_VIEW_CAMERA_WIDTH, RS_VIEW_CAMERA_HEIGHT)
+        if color_rgb.shape[1] == expected_size[0] and color_rgb.shape[0] == expected_size[1]:
+            return color_rgb
+        return cv2.resize(color_rgb, expected_size, interpolation=cv2.INTER_AREA)
+
+    @staticmethod
+    def _resize_depth(depth):
+        expected_size = (RS_VIEW_CAMERA_WIDTH, RS_VIEW_CAMERA_HEIGHT)
+        if depth.shape[1] == expected_size[0] and depth.shape[0] == expected_size[1]:
+            return depth
+        return cv2.resize(depth, expected_size, interpolation=cv2.INTER_NEAREST)
+
     def run(self) -> None:
         print("Starting composed camera bridge...")
         try:
@@ -49,11 +66,12 @@ class ComposedCameraBridge(SensorServer):
                     continue
 
                 color_rgb = color_bgr[:, :, ::-1]
+                color_rgb = self._resize_color(color_rgb)
                 timestamps = {"ego_view": ts}
                 images = {"ego_view": color_rgb}
                 if self.include_depth and depth is not None:
                     timestamps["ego_view_depth"] = ts
-                    images["ego_view_depth"] = depth
+                    images["ego_view_depth"] = self._resize_depth(depth)
 
                 bridged = ImageMessageSchema(
                     timestamps=timestamps,

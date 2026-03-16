@@ -96,6 +96,13 @@ except ImportError:
     print("Warning: get_g1_key_frame_poses not available (pyvista may not be installed).")
     get_g1_key_frame_poses = None
 
+try:
+    import rclpy
+    from gear_sonic_deploy.sonic_data.keyboard import KeyboardListenerPublisher
+except ImportError:
+    rclpy = None
+    KeyboardListenerPublisher = None
+
 
 class LocomotionMode(IntEnum):
     """Locomotion mode enum for robot movement."""
@@ -129,6 +136,35 @@ class StreamMode(Enum):
     PLANNER_FROZEN_UPPER_BODY = 3
     POSE_PAUSE = 4
     PLANNER_VR_3PT = 5
+
+
+def init_keyboard_listener_publisher():
+    """Create a ROS publisher for exporter control if ROS2 is available."""
+    if rclpy is None or KeyboardListenerPublisher is None:
+        print(
+            "Warning: ROS keyboard publisher unavailable. "
+            "Pico data-collection button mapping is disabled."
+        )
+        return None, False
+
+    owns_rclpy = False
+    try:
+        if not rclpy.ok():
+            rclpy.init(args=None)
+            owns_rclpy = True
+        publisher = KeyboardListenerPublisher(node_name="pico_keyboard_listener_publisher")
+        print("[Pico] Enabled data-collection mapping: left_grip+A -> c, left_grip+B -> x")
+        return publisher, owns_rclpy
+    except Exception as exc:
+        print(f"Warning: failed to initialize ROS keyboard publisher: {exc}")
+        if owns_rclpy and rclpy.ok():
+            rclpy.shutdown()
+        return None, False
+
+
+def shutdown_keyboard_listener_publisher(owns_rclpy: bool) -> None:
+    if owns_rclpy and rclpy is not None and rclpy.ok():
+        rclpy.shutdown()
 
 
 ### Parse 3 point pose from SMPL
@@ -820,6 +856,7 @@ def _pose_stream_common(
     with_g1_robot: bool = True,
     enable_waist_tracking: bool = False,
     enable_smpl_vis: bool = False,
+    keyboard_publisher=None,
 ):
     """Shared pose streaming loop used by run_pico."""
     if xrt is None:
@@ -850,6 +887,7 @@ def _pose_stream_common(
         record_dir=record_dir,
         record_format=record_format,
         log_prefix=log_prefix,
+        keyboard_publisher=keyboard_publisher,
     )
 
     if stop_event is None:
@@ -1176,6 +1214,7 @@ class PoseStreamer:
         record_dir: str,
         record_format: str,
         log_prefix: str = "PoseLoop",
+        keyboard_publisher=None,
     ):
         self.socket = socket
         self.reader = reader
@@ -1183,6 +1222,7 @@ class PoseStreamer:
         self.target_fps = target_fps
         self.record_dir = record_dir
         self.log_prefix = log_prefix
+        self.keyboard_publisher = keyboard_publisher
 
         # Injected dependencies
         self.reader = reader
@@ -1249,6 +1289,19 @@ class PoseStreamer:
         )
         self.yaw_accumulator = YawAccumulator()
 
+    def _publish_collection_control(
+        self, toggle_data_collection: bool, toggle_data_abort: bool
+    ) -> None:
+        if self.keyboard_publisher is None:
+            return
+
+        if toggle_data_collection:
+            self.keyboard_publisher.publish("c")
+            print(f"[{self.log_prefix}] Published /Gr00tKeyboardListener: c")
+        if toggle_data_abort:
+            self.keyboard_publisher.publish("x")
+            print(f"[{self.log_prefix}] Published /Gr00tKeyboardListener: x")
+
     def reset_yaw(self):
         """Called when entering pose mode. Resets yaw only.
         Calibration is triggered separately by the operator (A+B+X+Y → calibrate_now)."""
@@ -1292,6 +1345,7 @@ class PoseStreamer:
         toggle_data_abort = toggle_data_abort_tmp and not self.toggle_data_abort_last
         self.toggle_data_collection_last = toggle_data_collection_tmp
         self.toggle_data_abort_last = toggle_data_abort_tmp
+        self._publish_collection_control(toggle_data_collection, toggle_data_abort)
 
         left_hand_joints, right_hand_joints = compute_hand_joints_from_inputs(
             self.left_hand_ik_solver,
@@ -1516,6 +1570,7 @@ def run_pico(
     while not xrt.is_body_data_available():
         print("waiting for body data...")
         time.sleep(1)
+    keyboard_publisher, owns_rclpy = init_keyboard_listener_publisher()
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
     socket.bind(f"tcp://*:{port}")
@@ -1542,10 +1597,12 @@ def run_pico(
             with_g1_robot=with_g1_robot,
             enable_waist_tracking=enable_waist_tracking,
             enable_smpl_vis=enable_smpl_vis,
+            keyboard_publisher=keyboard_publisher,
         )
     finally:
         socket.close()
         context.term()
+        shutdown_keyboard_listener_publisher(owns_rclpy)
         print("Threads stopped, ZMQ socket closed")
 
 
@@ -1831,6 +1888,7 @@ def run_pico_manager(
     while not xrt.is_body_data_available():
         print("waiting for body data...")
         time.sleep(1)
+    keyboard_publisher, owns_rclpy = init_keyboard_listener_publisher()
 
     context = zmq.Context()
     socket = context.socket(zmq.PUB)
@@ -1868,6 +1926,7 @@ def run_pico_manager(
         record_dir=record_dir,
         record_format=record_format,
         log_prefix="PoseLoop",
+        keyboard_publisher=keyboard_publisher,
     )
     planner_streamer = PlannerStreamer(
         socket=socket,
@@ -2049,6 +2108,7 @@ def run_pico_manager(
         three_point.close()
         socket.close()
         context.term()
+        shutdown_keyboard_listener_publisher(owns_rclpy)
         print("[Manager] Shutdown complete")
 
 
