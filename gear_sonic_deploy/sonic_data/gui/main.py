@@ -21,16 +21,11 @@ if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
 from gear_sonic_deploy.sonic_data.camera_client import ComposedCameraClientSensor
+from gear_sonic_deploy.sonic_data.image_utils import colorize_depth
 from gear_sonic_deploy.sonic_data.keyboard import KeyboardListenerPublisher
 from gear_sonic_deploy.sonic_data.ros_utils import ROSManager, ROSMsgSubscriber
 from gear_sonic_deploy.sonic_data.topics import STATE_TOPIC_NAME
 from gear_sonic_deploy.sonic_data.gui.process_manager import ManagedProcess
-
-
-def colorize_depth(depth: np.ndarray, max_depth_mm: int) -> np.ndarray:
-    clipped = np.clip(depth, 0, max_depth_mm)
-    depth_u8 = cv2.convertScaleAbs(clipped, alpha=255.0 / max_depth_mm)
-    return cv2.applyColorMap(depth_u8, cv2.COLORMAP_JET)
 
 
 class StreamWorker(threading.Thread):
