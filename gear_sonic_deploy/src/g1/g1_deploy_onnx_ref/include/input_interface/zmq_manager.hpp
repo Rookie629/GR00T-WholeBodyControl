@@ -765,6 +765,7 @@ class ZMQManager : public InputInterface {
       int upper_body_position_idx = -1, upper_body_velocity_idx = -1;
       int left_hand_joints_idx = -1, right_hand_joints_idx = -1;
       int vr_position_idx = -1, vr_orientation_idx = -1, vr_compliance_idx = -1;
+      int toggle_data_collection_idx = -1, toggle_data_abort_idx = -1;
 
       for (size_t i = 0; i < hdr.fields.size(); ++i) {
         const auto& f = hdr.fields[i];
@@ -780,6 +781,8 @@ class ZMQManager : public InputInterface {
         else if (f.name == "vr_position") vr_position_idx = static_cast<int>(i);
         else if (f.name == "vr_orientation") vr_orientation_idx = static_cast<int>(i);
         else if (f.name == "vr_compliance") vr_compliance_idx = static_cast<int>(i);
+        else if (f.name == "toggle_data_collection") toggle_data_collection_idx = static_cast<int>(i);
+        else if (f.name == "toggle_data_abort") toggle_data_abort_idx = static_cast<int>(i);
       }
       
       if (mode_idx < 0 || movement_idx < 0 || facing_idx < 0) {
@@ -870,6 +873,31 @@ class ZMQManager : public InputInterface {
           msg.height = val;
         }
       }
+
+      // Optional: data collection control pulses
+      auto decode_optional_bool = [&](int field_idx, bool& target) {
+        if (field_idx < 0) {
+          return;
+        }
+        const auto& field = hdr.fields[field_idx];
+        const auto& buf = bufs[field_idx];
+        if (field.dtype == "bool" || field.dtype == "u8") {
+          uint8_t val = 0;
+          if (buf.size >= sizeof(uint8_t)) {
+            std::memcpy(&val, buf.data, sizeof(uint8_t));
+            target = (val != 0);
+          }
+        } else if (field.dtype == "i32") {
+          int32_t val = 0;
+          if (buf.size >= sizeof(int32_t)) {
+            std::memcpy(&val, buf.data, sizeof(int32_t));
+            if (needs_swap) val = byte_swap(val);
+            target = (val != 0);
+          }
+        }
+      };
+      decode_optional_bool(toggle_data_collection_idx, msg.toggle_data_collection);
+      decode_optional_bool(toggle_data_abort_idx, msg.toggle_data_abort);
 
       // Optional: upper_body_position (17 DOF, decode based on dtype)
       if (upper_body_position_idx >= 0) {
@@ -1191,6 +1219,13 @@ class ZMQManager : public InputInterface {
       std::lock_guard<std::mutex> lock(planner_mutex_);
       latest_planner_message_ = msg;
       latest_planner_message_.timestamp = std::chrono::steady_clock::now();
+
+      if (msg.toggle_data_collection) {
+        toggle_data_collection_.store(true, std::memory_order_release);
+      }
+      if (msg.toggle_data_abort) {
+        toggle_data_abort_.store(true, std::memory_order_release);
+      }
     }
     
 

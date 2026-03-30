@@ -64,6 +64,8 @@ struct CommandMessage {
  *   - upper_body_velocity: float[17] – target upper-body joint velocities (rad/s)
  *   - left_hand_joints   : float[7]  – Dex3 left-hand joint positions
  *   - right_hand_joints  : float[7]  – Dex3 right-hand joint positions
+ *   - toggle_data_collection : bool/u8/i32 – pulse to start/stop-save a data episode
+ *   - toggle_data_abort      : bool/u8/i32 – pulse to discard the current data episode
  *
  * The `timestamp` field is set locally on receipt and used for timeout
  * detection (planner messages older than ~1 s are considered stale).
@@ -95,6 +97,12 @@ struct PlannerMessage {
   /// Optional right-hand Dex3 joint positions (7 DOF).
   std::optional<std::array<double, 7>> right_hand_joints;
 
+  /// Optional pulse to start/stop-save a data episode.
+  bool toggle_data_collection = false;
+
+  /// Optional pulse to discard the current data episode.
+  bool toggle_data_abort = false;
+
   /// Desired locomotion speed.  -1.0 means "use the default for the current mode".
   double speed = -1.0;
 
@@ -105,4 +113,3 @@ struct PlannerMessage {
   /// Used to detect planner timeouts (stale data → fallback to IDLE).
   std::chrono::steady_clock::time_point timestamp{};
 };
-

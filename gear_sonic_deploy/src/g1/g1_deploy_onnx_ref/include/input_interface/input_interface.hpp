@@ -155,6 +155,16 @@ public:
       }
       return {false, {}};
     }
+
+    /// Consume a pending "start/stop-save episode" pulse from the input source.
+    virtual bool ConsumeToggleDataCollection() {
+      return toggle_data_collection_.exchange(false, std::memory_order_acq_rel);
+    }
+
+    /// Consume a pending "discard episode" pulse from the input source.
+    virtual bool ConsumeToggleDataAbort() {
+      return toggle_data_abort_.exchange(false, std::memory_order_acq_rel);
+    }
     
     // ------------------------------------------------------------------
     // VR 3-point tracking data accessors
@@ -462,6 +472,8 @@ protected:
     std::atomic<bool> has_hand_joints_{false};        ///< Dex3 hand joint data available.
     std::atomic<bool> has_external_token_state_{false}; ///< External token-state vector available.
     std::atomic<bool> has_upper_body_control_{false}; ///< Upper-body 17-DOF targets available.
+    std::atomic<bool> toggle_data_collection_{false}; ///< Pending pulse for episode start/stop-save.
+    std::atomic<bool> toggle_data_abort_{false};      ///< Pending pulse for episode discard.
 
     // ------------------------------------------------------------------
     // Thread-safe data buffers (written by input threads, read by control loop)

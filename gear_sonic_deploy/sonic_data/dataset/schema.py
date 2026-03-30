@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from gear_sonic_deploy.sonic_data.constants import RS_VIEW_CAMERA_HEIGHT, RS_VIEW_CAMERA_WIDTH
+from gear_sonic_deploy.sonic_data.constants import (
+    RS_VIEW_CAMERA_HEIGHT,
+    RS_VIEW_CAMERA_WIDTH,
+    SONIC_DECODER_INPUT_DIM,
+    SONIC_ENCODER_INPUT_DIM,
+    SONIC_TOKEN_STATE_DIM,
+)
 from gear_sonic_deploy.sonic_data.g1_profile import G1DataProfile
 
 
@@ -137,6 +143,21 @@ def get_dataset_features(
             "dtype": "float32",
             "shape": (1,),
             "names": "img_state_delta",
+        },
+        "observation.token_state": {
+            "dtype": "float64",
+            "shape": (SONIC_TOKEN_STATE_DIM,),
+            "names": [f"token_state_{i}" for i in range(SONIC_TOKEN_STATE_DIM)],
+        },
+        "observation.encoder_input": {
+            "dtype": "float64",
+            "shape": (SONIC_ENCODER_INPUT_DIM,),
+            "names": [f"encoder_input_{i}" for i in range(SONIC_ENCODER_INPUT_DIM)],
+        },
+        "observation.decoder_input": {
+            "dtype": "float64",
+            "shape": (SONIC_DECODER_INPUT_DIM,),
+            "names": [f"decoder_input_{i}" for i in range(SONIC_DECODER_INPUT_DIM)],
         },
         "teleop.navigate_command": {
             "dtype": "float64",

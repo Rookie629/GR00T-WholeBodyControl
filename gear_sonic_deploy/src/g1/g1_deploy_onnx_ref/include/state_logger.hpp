@@ -43,7 +43,7 @@
  *
  * Each control tick calls:
  *  1. `LogFullState(...)` – records IMU, joints, velocities, last action.
- *  2. `LogPostState(...)` – appends encoder token state and motion metadata
+ *  2. `LogPostState(...)` – appends encoder token state, model inputs, and motion metadata
  *     to the **same** entry (must be called after LogFullState).
  *
  * @note q.csv and dq.csv are transformed to raw hardware measurements
@@ -104,6 +104,10 @@ class StateLogger {
     // Post-state data (set after initial state logging via LogPostState)
     bool has_post_state_data = false;
     std::vector<double> token_state;  // Token/latent state from encoder
+    std::vector<double> encoder_input;  // Full encoder obs_dict tensor for the current tick
+    std::vector<double> decoder_input;  // Full decoder obs_dict tensor for the current tick
+    bool toggle_data_collection = false;  // Episode start/stop-save pulse from input
+    bool toggle_data_abort = false;       // Episode discard pulse from input
     int encoder_mode = -2;          // Encoder mode when token state was generated; -2: no token state, -1: need token but no encoder, 0,1,2,...: encoder mode.
     std::string motion_name = "";   // Name of the motion sequence being executed
     bool play = false;              // Operator play state (controls motion playback)
@@ -160,16 +164,27 @@ class StateLogger {
                         double ros_timestamp = 0.0);
 
   /**
-   * Log post-state data (e.g., token state from encoder) to the most recent entry.
+   * Log post-state data (e.g., token state and model inputs) to the most recent entry.
    * This modifies the newest entry in the ring buffer without creating a new entry.
    * Must be called AFTER LogFullState. Returns false if no entry exists, entry already has post-state data,
    * or if the update fails.
    * @param token_state Token/latent state vector from encoder
+   * @param encoder_input Full encoder obs_dict tensor for the current tick
+   * @param decoder_input Full decoder obs_dict tensor for the current tick
+   * @param toggle_data_collection Pulse to start/stop-save a data episode
+   * @param toggle_data_abort Pulse to discard the current data episode
    * @param encoder_mode Encoder mode value (-2: no token state, -1: need token but no encoder, 0+: encoder mode)
    * @param motion_name Name of the current motion sequence being executed
    * @param play Operator play state (controls motion playback)
    */
-  bool LogPostState(const std::span<double>& token_state, int encoder_mode = -2, const std::string& motion_name = "", bool play = false);
+  bool LogPostState(const std::span<double>& token_state,
+                    const std::span<double>& encoder_input = std::span<double>(),
+                    const std::span<double>& decoder_input = std::span<double>(),
+                    bool toggle_data_collection = false,
+                    bool toggle_data_abort = false,
+                    int encoder_mode = -2,
+                    const std::string& motion_name = "",
+                    bool play = false);
 
   size_t capacity() const;
   size_t size() const;

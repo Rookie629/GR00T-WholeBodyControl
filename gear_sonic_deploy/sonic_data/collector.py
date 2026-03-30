@@ -9,7 +9,12 @@ import rclpy
 
 from gear_sonic_deploy.sonic_data.camera_client import ComposedCameraClientSensor
 from gear_sonic_deploy.sonic_data.configs import DataExporterConfig
-from gear_sonic_deploy.sonic_data.constants import BUCKET_BASE_PATH
+from gear_sonic_deploy.sonic_data.constants import (
+    BUCKET_BASE_PATH,
+    SONIC_DECODER_INPUT_DIM,
+    SONIC_ENCODER_INPUT_DIM,
+    SONIC_TOKEN_STATE_DIM,
+)
 from gear_sonic_deploy.sonic_data.dataset import (
     DataCollectionInfo,
     Gr00tDataExporter,
@@ -69,6 +74,19 @@ class TimingThresholdMonitor:
 
 
 class Gr00tDataCollector:
+    @staticmethod
+    def _coerce_optional_vector(msg: dict, key: str, expected_shape: tuple[int, ...]) -> np.ndarray:
+        value = msg.get(key)
+        if value is None:
+            return np.zeros(expected_shape, dtype=np.float64)
+
+        array = np.asarray(value, dtype=np.float64)
+        if array.shape != expected_shape:
+            raise ValueError(
+                f"Feature '{key}' has shape {array.shape}, expected {expected_shape}."
+            )
+        return array
+
     def __init__(
         self,
         node,
@@ -192,6 +210,15 @@ class Gr00tDataCollector:
             "action": action,
             "wrist_pose": np.zeros(14, dtype=np.float64),
             "action.eef": np.zeros(14, dtype=np.float64),
+            "token_state": Gr00tDataCollector._coerce_optional_vector(
+                msg, "token_state", (SONIC_TOKEN_STATE_DIM,)
+            ),
+            "encoder_input": Gr00tDataCollector._coerce_optional_vector(
+                msg, "encoder_input", (SONIC_ENCODER_INPUT_DIM,)
+            ),
+            "decoder_input": Gr00tDataCollector._coerce_optional_vector(
+                msg, "decoder_input", (SONIC_DECODER_INPUT_DIM,)
+            ),
             "navigate_command": np.zeros(3, dtype=np.float64),
             "base_height_command": 0.0,
             "timestamps": {"proprio": float(msg["ros_timestamp"])},
@@ -255,6 +282,15 @@ class Gr00tDataCollector:
                 "action": self.latest_proprio_msg["action"],
                 "action.eef": self.latest_proprio_msg["action.eef"],
                 "observation.img_state_delta": np.array([max_time_delta], dtype=np.float32),
+                "observation.token_state": self._coerce_optional_vector(
+                    self.latest_proprio_msg, "token_state", (SONIC_TOKEN_STATE_DIM,)
+                ),
+                "observation.encoder_input": self._coerce_optional_vector(
+                    self.latest_proprio_msg, "encoder_input", (SONIC_ENCODER_INPUT_DIM,)
+                ),
+                "observation.decoder_input": self._coerce_optional_vector(
+                    self.latest_proprio_msg, "decoder_input", (SONIC_DECODER_INPUT_DIM,)
+                ),
                 "teleop.navigate_command": np.array(
                     self.latest_proprio_msg["navigate_command"], dtype=np.float64
                 ),

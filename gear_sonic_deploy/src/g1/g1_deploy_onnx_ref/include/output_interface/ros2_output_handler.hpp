@@ -32,6 +32,8 @@
  *   last_left_hand_action| double[7]    | Last left-hand action.
  *   last_right_hand_action| double[7]   | Last right-hand action.
  *   token_state          | double[N]    | Encoder token state (empty if not available).
+ *   encoder_input        | double[N]    | Full encoder obs_dict tensor for the current tick.
+ *   decoder_input        | double[N]    | Full decoder obs_dict tensor for the current tick.
  *   init_base_quat       | double[4]    | Initial base quaternion (if heading state available).
  *   delta_heading        | double       | Delta heading (if heading state available).
  *
@@ -55,11 +57,13 @@
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp/exceptions/exceptions.hpp>
 #include <std_msgs/msg/byte_multi_array.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <memory>
 #include <iostream>
 #include <thread>
 #include <chrono>
 #include <map>
+#include <limits>
 #include <vector>
 #include <variant>
 #include <stdexcept>
@@ -138,6 +142,13 @@ public:
                     std::cout << "[ROS2 Output DEBUG] Resetting robot config publisher" << std::endl;
                 }
                 robot_config_pub_.reset();
+            }
+
+            if (keyboard_listener_pub_) {
+                if constexpr (DEBUG_LOGGING) {
+                    std::cout << "[ROS2 Output DEBUG] Resetting keyboard listener publisher" << std::endl;
+                }
+                keyboard_listener_pub_.reset();
             }
             
             // Step 2: Allow DDS cleanup time
@@ -252,8 +263,11 @@ private:
     rclcpp::Publisher<std_msgs::msg::ByteMultiArray>::SharedPtr state_logger_pub_;
     /// Publisher for one-shot robot config (WBCPolicy/robot_config, transient_local).
     rclcpp::Publisher<std_msgs::msg::ByteMultiArray>::SharedPtr robot_config_pub_;
+    /// Publisher that mirrors GUI record/discard commands for the collector.
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr keyboard_listener_pub_;
     
     bool robot_config_published_ = false;  ///< True once publish_config() has succeeded.
+    uint64_t last_keyboard_command_index_ = std::numeric_limits<uint64_t>::max();
 
     /// Create the two ROS 2 publishers with appropriate QoS settings.
     void setup_publishers() {
@@ -280,6 +294,15 @@ private:
         
         if constexpr (DEBUG_LOGGING) {
             std::cout << "[ROS2 Output DEBUG] Created publisher for WBCPolicy/robot_config (transient_local)" << std::endl;
+        }
+
+        keyboard_listener_pub_ = node_->create_publisher<std_msgs::msg::String>(
+            "/Gr00tKeyboardListener",
+            10
+        );
+
+        if constexpr (DEBUG_LOGGING) {
+            std::cout << "[ROS2 Output DEBUG] Created publisher for /Gr00tKeyboardListener" << std::endl;
         }
     }
 
@@ -337,6 +360,33 @@ private:
         msg.data = msgpack_data;
         
         state_logger_pub_->publish(msg);
+
+        if (!keyboard_listener_pub_ || state_logger_.size() == 0) {
+            return;
+        }
+
+        std::vector<StateLogger::Entry> entries = state_logger_.GetLatest(1);
+        const StateLogger::Entry& state = entries[0];
+        if (state.index == last_keyboard_command_index_) {
+            return;
+        }
+        last_keyboard_command_index_ = state.index;
+
+        publish_keyboard_command(state);
+    }
+
+    void publish_keyboard_command(const StateLogger::Entry& state) {
+        if (state.toggle_data_collection) {
+            std_msgs::msg::String msg;
+            msg.data = "c";
+            keyboard_listener_pub_->publish(msg);
+        }
+
+        if (state.toggle_data_abort) {
+            std_msgs::msg::String msg;
+            msg.data = "x";
+            keyboard_listener_pub_->publish(msg);
+        }
     }
 
     /**
@@ -371,8 +421,8 @@ private:
             has_heading_state = true;
         }
         
-        // Create a map with all entry fields (17 base fields + 2 optional heading fields)
-        int num_fields = 17;
+        // Create a map with all entry fields (19 base fields + 2 optional heading fields)
+        int num_fields = 19;
         if (has_heading_state) {
             num_fields += 2;  // Add init_base_quat and delta_heading
         }
@@ -534,6 +584,28 @@ private:
             // Pack empty array if no token state available
             pk.pack_array(0);
         }
+
+        // Pack encoder_input (dynamic size, full encoder obs_dict tensor)
+        pk.pack("encoder_input");
+        if (state.has_post_state_data && !state.encoder_input.empty()) {
+            pk.pack_array(state.encoder_input.size());
+            for (const auto& val : state.encoder_input) {
+                pk.pack(val);
+            }
+        } else {
+            pk.pack_array(0);
+        }
+
+        // Pack decoder_input (dynamic size, full decoder obs_dict tensor)
+        pk.pack("decoder_input");
+        if (state.has_post_state_data && !state.decoder_input.empty()) {
+            pk.pack_array(state.decoder_input.size());
+            for (const auto& val : state.decoder_input) {
+                pk.pack(val);
+            }
+        } else {
+            pk.pack_array(0);
+        }
         
         // Pack init_base_quat and delta_heading from heading state (if available)
         if (has_heading_state) {
@@ -558,4 +630,3 @@ private:
 #endif // HAS_ROS2
 
 #endif // ROS2_OUTPUT_HANDLER_HPP
-

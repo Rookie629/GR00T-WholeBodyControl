@@ -199,6 +199,8 @@ class G1Deploy {
     std::array<double, 17> upper_body_joint_positions_buffer_;
     std::array<double, 17> upper_body_joint_velocities_buffer_;
     std::vector<double> token_state_data_;  // Token buffer (size from config)
+    bool toggle_data_collection_buffer_ = false;
+    bool toggle_data_abort_buffer_ = false;
     
     // =========================================================================
     // Motion data, current motion, and recording
@@ -2731,6 +2733,8 @@ class G1Deploy {
       std::tie(has_right_hand_data_, right_hand_joint_buffer_) = input_interface_->GetHandPose(false);
       std::tie(has_upper_body_data_, upper_body_joint_positions_buffer_) = input_interface_->GetUpperBodyJointPositions();
       std::tie(std::ignore, upper_body_joint_velocities_buffer_) = input_interface_->GetUpperBodyJointVelocities();
+      toggle_data_collection_buffer_ = input_interface_->ConsumeToggleDataCollection();
+      toggle_data_abort_buffer_ = input_interface_->ConsumeToggleDataAbort();
 
       auto last_update_time = input_interface_->GetLastUpdateTime();
       if (last_update_time.has_value()) {
@@ -3494,7 +3498,15 @@ class G1Deploy {
           // This must be called after GatherObservations() which populates token_state_data_
           if (state_logger_) {
             std::string motion_name = current_motion_copy ? current_motion_copy->name : "";
-            if (!state_logger_->LogPostState(std::span(token_state_data_), current_encoder_mode_copy, motion_name, current_play_copy)) {
+            if (!state_logger_->LogPostState(
+                  std::span(token_state_data_),
+                  std::span(encoder_obs_buffer_),
+                  std::span(obs_buffer_),
+                  toggle_data_collection_buffer_,
+                  toggle_data_abort_buffer_,
+                  current_encoder_mode_copy,
+                  motion_name,
+                  current_play_copy)) {
               std::cerr << "[WARNING] Failed to log token state to state logger" << std::endl;
             }
           }

@@ -127,7 +127,14 @@ uint64_t StateLogger::LogFullState(const std::array<double, 4>& base_quat,
   return e.index;
 }
 
-bool StateLogger::LogPostState(const std::span<double>& token_state, int encoder_mode, const std::string& motion_name, bool play) {
+bool StateLogger::LogPostState(const std::span<double>& token_state,
+                               const std::span<double>& encoder_input,
+                               const std::span<double>& decoder_input,
+                               bool toggle_data_collection,
+                               bool toggle_data_abort,
+                               int encoder_mode,
+                               const std::string& motion_name,
+                               bool play) {
   std::lock_guard<std::mutex> lock(ring_mutex_);
 
   // Check if we have any entries
@@ -149,6 +156,10 @@ bool StateLogger::LogPostState(const std::span<double>& token_state, int encoder
 
   // Update the entry with token state and metadata
   newest.token_state.assign(std::begin(token_state), std::end(token_state));
+  newest.encoder_input.assign(std::begin(encoder_input), std::end(encoder_input));
+  newest.decoder_input.assign(std::begin(decoder_input), std::end(decoder_input));
+  newest.toggle_data_collection = toggle_data_collection;
+  newest.toggle_data_abort = toggle_data_abort;
   newest.encoder_mode = encoder_mode;
   newest.motion_name = motion_name;
   newest.play = play;
@@ -486,6 +497,9 @@ Entry StateLogger::makeZeroEntry_() const {
   // Post-state data (default to no post-state data)
   e.has_post_state_data = false;
   e.token_state.clear();
+  e.encoder_input.clear();
+  e.decoder_input.clear();
+  e.toggle_data_collection = false;
+  e.toggle_data_abort = false;
   return e;
 }
-
