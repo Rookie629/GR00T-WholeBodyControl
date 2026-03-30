@@ -57,6 +57,10 @@ source .venv_teleop/bin/activate
 echo "[INFO] Installing gear_sonic[teleop] …"
 uv pip install -e "gear_sonic[teleop]"
 
+# ── 4b. Install Vuer for browser-based ego-view streaming ────────────────────
+echo "[INFO] Installing vuer for ego-view browser streaming …"
+uv pip install "vuer==0.1.4"
+
 # ── 5. Install xrobotoolkit_sdk (CMake-based, not a pip package) ──────────────
 echo "[INFO] Installing XRoboToolkit SDK …"
 # Install cmake + pybind11 into the venv so the CMake-based build can find them.
