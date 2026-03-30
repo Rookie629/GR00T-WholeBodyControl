@@ -180,10 +180,7 @@ class DatasetEpisodeReader:
         data_chunk_index = int(self.episode_row["data/chunk_index"])
         data_file_index = int(self.episode_row["data/file_index"])
         data_df = load_data_file(self.dataset_root, data_chunk_index, data_file_index)
-
-        dataset_from_index = int(self.episode_row.get("dataset_from_index", 0))
-        dataset_to_index = int(self.episode_row.get("dataset_to_index", len(data_df)))
-        self.data_df = data_df.iloc[dataset_from_index:dataset_to_index].reset_index(drop=True)
+        self.data_df = self._select_episode_frames_from_data_file(data_df)
 
         video_chunk_index = int(self.episode_row[f"videos/{self.rgb_key}/chunk_index"])
         video_file_index = int(self.episode_row[f"videos/{self.rgb_key}/file_index"])
@@ -234,6 +231,41 @@ class DatasetEpisodeReader:
                 f"Episode {episode_index} not found under {self.dataset_root}. Available episodes: {available}"
             )
         return row.iloc[0]
+
+    def _select_episode_frames_from_data_file(self, data_df: pd.DataFrame) -> pd.DataFrame:
+        # Prefer filtering by episode index. This works for both one-episode-per-file
+        # layouts and multi-episode shared parquet shards.
+        if "episode_index" in data_df.columns:
+            episode_df = data_df.loc[data_df["episode_index"] == self.episode_index].reset_index(
+                drop=True
+            )
+            if len(episode_df) == self.length:
+                return episode_df
+
+        # Fall back to the global dataset index range recorded in meta/episodes.
+        dataset_from_index = int(self.episode_row.get("dataset_from_index", 0))
+        dataset_to_index = int(self.episode_row.get("dataset_to_index", dataset_from_index))
+        expected_length = dataset_to_index - dataset_from_index
+        if expected_length != self.length:
+            raise DatasetReplayError(
+                f"Episode {self.episode_index} metadata length mismatch: "
+                f"length={self.length}, dataset range=[{dataset_from_index}, {dataset_to_index})"
+            )
+
+        if "index" in data_df.columns:
+            episode_df = data_df.loc[
+                (data_df["index"] >= dataset_from_index) & (data_df["index"] < dataset_to_index)
+            ].reset_index(drop=True)
+            if len(episode_df) == self.length:
+                return episode_df
+
+        # Last-resort fallback for parquet files that store only the current episode.
+        if len(data_df) == self.length:
+            return data_df.reset_index(drop=True)
+
+        raise DatasetReplayError(
+            f"Episode {self.episode_index} expected {self.length} parquet rows, found {len(data_df)}"
+        )
 
     def get_sample(self, frame_index: int) -> ReplaySample:
         if frame_index < 0 or frame_index >= self.length:
