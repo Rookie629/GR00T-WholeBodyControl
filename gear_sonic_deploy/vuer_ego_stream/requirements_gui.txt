@@ -1,0 +1,2 @@
+-r requirements_common.txt
+opencv-python>=4.9,<5.0

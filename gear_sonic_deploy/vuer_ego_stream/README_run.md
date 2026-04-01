@@ -32,18 +32,22 @@ This milestone intentionally uses JPEG-over-WebSocket for simplicity and debugga
 
 ## Dependencies
 
-Mandatory:
+Python requirements are split by deployment mode:
+
+- `requirements_gui.txt`: desktop development and local browser debugging
+- `requirements_pico.txt`: Pico / headless deployment without OpenCV GUI bindings
+
+Install one of them from this directory:
 
 ```bash
 python3 -m pip install --upgrade pip
-python3 -m pip install "vuer==0.1.4" "numpy>=1.24,<2.0"
-python3 -m pip install "opencv-python>=4.9,<5.0" "pyzmq>=25,<27" "msgpack>=1,<2" "msgpack-numpy>=0.4,<1"
+python3 -m pip install -r gear_sonic_deploy/vuer_ego_stream/requirements_gui.txt
 ```
 
-If you do not want GUI OpenCV bindings on Linux, use this instead of `opencv-python`:
+or:
 
 ```bash
-python3 -m pip install "opencv-python-headless>=4.9,<5.0"
+python3 -m pip install -r gear_sonic_deploy/vuer_ego_stream/requirements_pico.txt
 ```
 
 Optional but useful:
@@ -51,6 +55,12 @@ Optional but useful:
 ```bash
 python3 -m pip install "ipython>=8,<9"
 ```
+
+System prerequisites not managed by `pip`:
+
+- The GUI-matching bridge source still requires the same camera bridge to be running and publishing to `127.0.0.1:5560`.
+- Pico access still requires exposing the websocket through a secure `wss://` tunnel or reverse proxy.
+- If you also use the existing `sonic_data` Tk GUI, make sure the system Python has `tkinter`, and ROS2 Python packages such as `rclpy` come from the ROS2 installation rather than `pip`.
 
 ## Run
 
