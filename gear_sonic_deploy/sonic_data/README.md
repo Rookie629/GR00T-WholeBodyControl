@@ -102,8 +102,15 @@ Typical GUI usage:
 Dataset output layout:
 
 - `meta/info.json`
+- `meta/modality.json`
 - `meta/stats.json`
-- `meta/tasks.parquet`
-- `meta/episodes/chunk-*/file-000.parquet`
-- `data/chunk-*/file-*.parquet`
-- `videos/observation.images.ego_view/chunk-*/file-*.mp4`
+- `meta/relative_stats.json`
+- `meta/tasks.jsonl`
+- `meta/episodes.jsonl`
+- `data/chunk-*/episode_*.parquet`
+- `videos/chunk-*/observation.images.ego_view/episode_*.mp4`
+
+Depth handling:
+
+- `observation.images.ego_view_depth` is preserved as a repo-specific `uint16` extension in parquet/meta.
+- RGB video follows the strict GR00T LeRobot v2 MP4 layout; depth is not promoted to MP4.

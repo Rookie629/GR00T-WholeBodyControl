@@ -21,6 +21,9 @@ SYSTEM_FEATURES = {
     "index": {"dtype": "int64", "shape": (), "names": None},
     "task_index": {"dtype": "int64", "shape": (), "names": None},
 }
+ANNOTATION_FEATURES = {
+    "annotation.human.action.task_description": {"dtype": "int64", "shape": (), "names": None},
+}
 STATS_KEYS = ("min", "max", "mean", "std", "count", "q01", "q10", "q50", "q90", "q99")
 
 
@@ -41,6 +44,26 @@ def _write_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=4)
+
+
+def _read_jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    rows = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        for row in rows:
+            f.write(json.dumps(row, ensure_ascii=True))
+            f.write("\n")
 
 
 def _normalize_shape(shape) -> list[int]:
@@ -102,15 +125,14 @@ def _round_trip_feature_spec(feature_name: str, spec: dict, fps: int) -> dict:
             "has_audio": False,
         }
     elif feature_name.endswith("ego_view_depth"):
-        out["info"] = {
-            "storage_dtype": "uint16",
-        }
+        out["info"] = {"storage_dtype": "uint16"}
     return out
 
 
 def _build_info_features(features: dict, fps: int) -> dict:
     merged = dict(features)
     merged.update(SYSTEM_FEATURES)
+    merged.update(ANNOTATION_FEATURES)
     return {
         key: _round_trip_feature_spec(key, spec, fps)
         for key, spec in merged.items()
@@ -122,35 +144,23 @@ def _safe_mb_size(paths: list[Path]) -> int:
     return int(ceil(total_bytes / (1024 * 1024))) if total_bytes > 0 else 0
 
 
-def _stat_payload(values: list[Any], *, video: bool = False) -> dict[str, list]:
+def _stat_payload(values: list[Any]) -> dict[str, list]:
     if len(values) == 0:
         return {key: [0] for key in STATS_KEYS}
 
     array = np.asarray(values)
-    if video:
-        data = array.astype(np.float32) / 255.0
-        reduce_axes = tuple(range(data.ndim - 1))
-        reducer = lambda fn: np.asarray(fn(data, axis=reduce_axes), dtype=np.float64).reshape(-1, 1, 1)
-    elif array.ndim <= 1:
+    if array.ndim <= 1:
         data = array.astype(np.float64)
         reducer = lambda fn: np.asarray([fn(data)], dtype=np.float64)
+        quantile = lambda q: np.asarray([np.quantile(data, q)], dtype=np.float64)
     elif array.ndim == 2:
         data = array.astype(np.float64)
         reducer = lambda fn: np.asarray(fn(data, axis=0), dtype=np.float64)
+        quantile = lambda q: np.asarray(np.quantile(data, q, axis=0), dtype=np.float64)
     else:
-        # High-dimensional arrays such as depth maps would explode metadata size if we
-        # kept per-pixel stats. Store reduced scalar stats instead.
         data = array.astype(np.float64).reshape(array.shape[0], -1)
         reducer = lambda fn: np.asarray([fn(data)], dtype=np.float64)
-
-    def quantile(q: float) -> np.ndarray:
-        if video:
-            return np.asarray(np.quantile(data, q, axis=reduce_axes), dtype=np.float64).reshape(-1, 1, 1)
-        if array.ndim <= 1:
-            return np.asarray([np.quantile(data, q)], dtype=np.float64)
-        if array.ndim == 2:
-            return np.asarray(np.quantile(data, q, axis=0), dtype=np.float64)
-        return np.asarray([np.quantile(data, q)], dtype=np.float64)
+        quantile = lambda q: np.asarray([np.quantile(data, q)], dtype=np.float64)
 
     return {
         "min": reducer(np.min).tolist(),
@@ -166,58 +176,69 @@ def _stat_payload(values: list[Any], *, video: bool = False) -> dict[str, list]:
     }
 
 
-def _aggregate_episode_stats(records: list[dict], feature_name: str) -> Optional[dict[str, list]]:
-    if not records:
+def _aggregate_feature_stats(stat_rows: list[dict[str, list]]) -> Optional[dict[str, list]]:
+    if not stat_rows:
         return None
 
-    count_key = f"stats/{feature_name}/count"
-    if count_key not in records[0]:
-        return None
-
-    weights = []
-    mins = []
-    maxs = []
-    means = []
-    stds = []
-    quantiles: dict[str, list[np.ndarray]] = {key: [] for key in ("q01", "q10", "q50", "q90", "q99")}
-
-    for row in records:
-        weight = int(np.asarray(row[count_key]).reshape(-1)[0])
-        weights.append(weight)
-        mins.append(np.asarray(row[f"stats/{feature_name}/min"], dtype=np.float64))
-        maxs.append(np.asarray(row[f"stats/{feature_name}/max"], dtype=np.float64))
-        means.append(np.asarray(row[f"stats/{feature_name}/mean"], dtype=np.float64))
-        stds.append(np.asarray(row[f"stats/{feature_name}/std"], dtype=np.float64))
-        for key in quantiles:
-            quantiles[key].append(np.asarray(row[f"stats/{feature_name}/{key}"], dtype=np.float64))
-
+    weights = [
+        int(np.asarray(row["count"], dtype=np.int64).reshape(-1)[0])
+        for row in stat_rows
+    ]
     total = sum(weights)
     if total == 0:
         return None
 
-    mins_arr = np.stack(mins)
-    maxs_arr = np.stack(maxs)
-    means_arr = np.stack(means)
-    stds_arr = np.stack(stds)
-    weights_arr = np.asarray(weights, dtype=np.float64).reshape((-1,) + (1,) * (means_arr.ndim - 1))
+    mins = np.stack([np.asarray(row["min"], dtype=np.float64) for row in stat_rows])
+    maxs = np.stack([np.asarray(row["max"], dtype=np.float64) for row in stat_rows])
+    means = np.stack([np.asarray(row["mean"], dtype=np.float64) for row in stat_rows])
+    stds = np.stack([np.asarray(row["std"], dtype=np.float64) for row in stat_rows])
+    weights_arr = np.asarray(weights, dtype=np.float64).reshape((-1,) + (1,) * (means.ndim - 1))
 
-    overall_mean = np.sum(means_arr * weights_arr, axis=0) / total
+    overall_mean = np.sum(means * weights_arr, axis=0) / total
     overall_var = np.sum(
-        weights_arr * (stds_arr**2 + (means_arr - overall_mean) ** 2),
+        weights_arr * (stds**2 + (means - overall_mean) ** 2),
         axis=0,
     ) / total
 
     aggregated = {
-        "min": np.min(mins_arr, axis=0).tolist(),
-        "max": np.max(maxs_arr, axis=0).tolist(),
+        "min": np.min(mins, axis=0).tolist(),
+        "max": np.max(maxs, axis=0).tolist(),
         "mean": overall_mean.tolist(),
         "std": np.sqrt(np.maximum(overall_var, 0.0)).tolist(),
         "count": [total],
     }
-    for key, values in quantiles.items():
-        arr = np.stack(values)
-        aggregated[key] = (np.sum(arr * weights_arr, axis=0) / total).tolist()
+    for key in ("q01", "q10", "q50", "q90", "q99"):
+        q_values = np.stack([np.asarray(row[key], dtype=np.float64) for row in stat_rows])
+        aggregated[key] = (np.sum(q_values * weights_arr, axis=0) / total).tolist()
     return aggregated
+
+
+def _to_numpy_sequence(values: list[Any], dtype: np.dtype | None = np.float64) -> list[np.ndarray]:
+    sequence = []
+    for value in values:
+        if dtype is None:
+            sequence.append(np.asarray(value))
+        else:
+            sequence.append(np.asarray(value, dtype=dtype))
+    return sequence
+
+
+def _diff_sequence(values: list[Any]) -> list[np.ndarray]:
+    if len(values) < 2:
+        return []
+    stacked = np.stack(_to_numpy_sequence(values, dtype=np.float64), axis=0)
+    diffs = np.diff(stacked, axis=0)
+    return [diffs[i] for i in range(diffs.shape[0])]
+
+
+def _feature_supports_relative_stats(name: str, spec: dict) -> bool:
+    if name in SYSTEM_FEATURES:
+        return False
+    if name.startswith("annotation."):
+        return False
+    if spec["dtype"] == "video":
+        return False
+    return True
 
 
 @dataclass
@@ -248,14 +269,25 @@ class Gr00tDatasetMetadata:
     MODALITY_CONFIG_REL_PATH = Path("meta/modality.json")
     INFO_REL_PATH = Path("meta/info.json")
     STATS_REL_PATH = Path("meta/stats.json")
-    TASKS_REL_PATH = Path("meta/tasks.parquet")
-    EPISODES_REL_DIR = Path("meta/episodes")
+    RELATIVE_STATS_REL_PATH = Path("meta/relative_stats.json")
+    TASKS_REL_PATH = Path("meta/tasks.jsonl")
+    EPISODES_REL_PATH = Path("meta/episodes.jsonl")
+    LEGACY_TASKS_REL_PATH = Path("meta/tasks.parquet")
+    LEGACY_EPISODES_REL_DIR = Path("meta/episodes")
 
     def __init__(self, root: str | Path):
         self.root = Path(root)
         self.repo_id = "local/sonic_dataset"
         self.local_files_only = True
         self._load()
+
+    @classmethod
+    def detect_legacy_layout(cls, root: str | Path) -> bool:
+        root_path = Path(root)
+        return (
+            (root_path / cls.LEGACY_TASKS_REL_PATH).exists()
+            or (root_path / cls.LEGACY_EPISODES_REL_DIR).exists()
+        )
 
     def _load(self) -> None:
         with (self.root / self.INFO_REL_PATH).open("r", encoding="utf-8") as f:
@@ -266,7 +298,6 @@ class Gr00tDatasetMetadata:
         self.features = self.info.get("collector_features", {})
         self.video_keys = [key for key, spec in self.features.items() if spec["dtype"] == "video"]
         self.chunk_size = int(self.info.get("chunks_size", 1000))
-        self.fps = int(self.info["fps"])
 
         self.tasks_by_index: list[str] = []
         self.task_to_index: dict[str, int] = {}
@@ -294,13 +325,13 @@ class Gr00tDatasetMetadata:
         (root_path / "videos").mkdir(parents=True, exist_ok=True)
 
         info = {
-            "codebase_version": "v3.0",
+            "codebase_version": "gr00t_lerobot_v2",
             "robot_type": robot_type or data_collection_info.robot_type or "g1",
             "fps": int(fps),
             "chunks_size": 1000,
             "splits": {"train": "0:0"},
-            "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
-            "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+            "data_path": "data/chunk-{chunk_index:03d}/episode_{episode_index:06d}.parquet",
+            "video_path": "videos/chunk-{chunk_index:03d}/{video_key}/episode_{episode_index:06d}.mp4",
             "total_episodes": 0,
             "total_frames": 0,
             "total_tasks": 0,
@@ -319,58 +350,46 @@ class Gr00tDatasetMetadata:
         _write_json(root_path / cls.INFO_REL_PATH, info)
         _write_json(root_path / cls.MODALITY_CONFIG_REL_PATH, modality_config)
         _write_json(root_path / cls.STATS_REL_PATH, {})
+        _write_json(root_path / cls.RELATIVE_STATS_REL_PATH, {})
+        _write_jsonl(root_path / cls.TASKS_REL_PATH, [])
+        _write_jsonl(root_path / cls.EPISODES_REL_PATH, [])
 
-        meta = cls(root_path)
-        meta._rewrite_tasks_parquet()
-        return meta
+        return cls(root_path)
 
     def _compute_next_episode_index(self) -> int:
-        indices = [row["episode_index"] for row in self.episode_records]
-        indices.extend(self.discarded_episode_indices)
+        indices = [int(row["episode_index"]) for row in self.episode_records]
+        indices.extend(int(idx) for idx in self.discarded_episode_indices)
         return (max(indices) + 1) if indices else 0
 
     def _load_tasks(self) -> None:
-        path = self.root / self.TASKS_REL_PATH
-        if not path.exists():
-            return
-        table = pq.read_table(path)
-        tasks = table["__index_level_0__"].to_pylist()
-        indices = table["task_index"].to_pylist()
-        for task, idx in zip(tasks, indices):
-            self.task_to_index[task] = int(idx)
+        rows = sorted(_read_jsonl(self.root / self.TASKS_REL_PATH), key=lambda row: int(row["task_index"]))
+        for row in rows:
+            task = str(row["task"])
+            idx = int(row["task_index"])
+            self.task_to_index[task] = idx
         self.tasks_by_index = [task for task, _ in sorted(self.task_to_index.items(), key=lambda item: item[1])]
 
     def _load_episode_records(self) -> list[dict]:
-        rows: list[dict] = []
-        for path in sorted((self.root / self.EPISODES_REL_DIR).glob("chunk-*/file-*.parquet")):
-            rows.extend(pq.read_table(path).to_pylist())
-        return rows
+        rows = _read_jsonl(self.root / self.EPISODES_REL_PATH)
+        return sorted(rows, key=lambda row: int(row["episode_index"]))
 
-    def _rewrite_tasks_parquet(self) -> None:
+    def _rewrite_tasks_jsonl(self) -> None:
         rows = [
-            {"task_index": idx, "__index_level_0__": task}
+            {"task_index": idx, "task": task}
             for idx, task in enumerate(self.tasks_by_index)
         ]
-        path = self.root / self.TASKS_REL_PATH
-        if rows:
-            pq.write_table(pa.Table.from_pylist(rows), path)
-        else:
-            pq.write_table(
-                pa.table(
-                    {
-                        "task_index": pa.array([], type=pa.int64()),
-                        "__index_level_0__": pa.array([], type=pa.string()),
-                    }
-                ),
-                path,
-            )
+        _write_jsonl(self.root / self.TASKS_REL_PATH, rows)
+
+    def _rewrite_episodes_jsonl(self) -> None:
+        rows = sorted(self.episode_records, key=lambda row: int(row["episode_index"]))
+        _write_jsonl(self.root / self.EPISODES_REL_PATH, rows)
 
     def get_task_index(self, task: str) -> int:
         if task not in self.task_to_index:
             task_index = len(self.tasks_by_index)
             self.task_to_index[task] = task_index
             self.tasks_by_index.append(task)
-            self._rewrite_tasks_parquet()
+            self._rewrite_tasks_jsonl()
             self.info["total_tasks"] = len(self.tasks_by_index)
             self.save_info()
         return self.task_to_index[task]
@@ -379,26 +398,22 @@ class Gr00tDatasetMetadata:
         return divmod(episode_index, self.chunk_size)
 
     def get_data_file_path(self, episode_index: int) -> Path:
-        chunk_index, file_index = self.get_chunk_file_indices(episode_index)
-        return Path("data") / f"chunk-{chunk_index:03d}" / f"file-{file_index:03d}.parquet"
+        chunk_index, _ = self.get_chunk_file_indices(episode_index)
+        return Path("data") / f"chunk-{chunk_index:03d}" / f"episode_{episode_index:06d}.parquet"
 
     def get_video_file_path(self, episode_index: int, video_key: str) -> Path:
-        chunk_index, file_index = self.get_chunk_file_indices(episode_index)
-        return Path("videos") / video_key / f"chunk-{chunk_index:03d}" / f"file-{file_index:03d}.mp4"
-
-    def get_episode_file_path(self, chunk_index: int) -> Path:
-        return self.EPISODES_REL_DIR / f"chunk-{chunk_index:03d}" / "file-000.parquet"
+        chunk_index, _ = self.get_chunk_file_indices(episode_index)
+        return Path("videos") / f"chunk-{chunk_index:03d}" / video_key / f"episode_{episode_index:06d}.mp4"
 
     def append_episode_record(self, record: dict) -> None:
         self.episode_records.append(record)
-        chunk_index = int(record["meta/episodes/chunk_index"])
-        path = self.root / self.get_episode_file_path(chunk_index)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        rows = [row for row in self.episode_records if int(row["meta/episodes/chunk_index"]) == chunk_index]
-        pq.write_table(pa.Table.from_pylist(rows), path)
+        self._rewrite_episodes_jsonl()
 
     def save_stats(self, stats: dict) -> None:
         _write_json(self.root / self.STATS_REL_PATH, stats)
+
+    def save_relative_stats(self, stats: dict) -> None:
+        _write_json(self.root / self.RELATIVE_STATS_REL_PATH, stats)
 
     def save_info(self) -> None:
         _write_json(self.root / self.INFO_REL_PATH, self.info)
@@ -437,12 +452,25 @@ class Gr00tDataExporter:
         overwrite_existing: bool = False,
         upload_bucket_path: str | None = None,
     ) -> "Gr00tDataExporter":
-        del tolerance_s  # kept for CLI compatibility
+        del tolerance_s
+
         root = Path(save_root)
         if overwrite_existing and root.exists():
             shutil.rmtree(root)
 
-        if root.exists():
+        if root.exists() and any(root.iterdir()):
+            if Gr00tDatasetMetadata.detect_legacy_layout(root):
+                raise ValueError(
+                    "Existing dataset uses the legacy sonic export layout "
+                    "(meta/tasks.parquet or meta/episodes/chunk-*). "
+                    "Use a new output directory or migrate the dataset first."
+                )
+            info_path = root / Gr00tDatasetMetadata.INFO_REL_PATH
+            if not info_path.exists():
+                raise ValueError(
+                    f"Existing directory {root} is not a valid strict GR00T dataset. "
+                    "Use a new empty output directory or remove the existing contents."
+                )
             meta = Gr00tDatasetMetadata(root)
         else:
             meta = Gr00tDatasetMetadata.create(
@@ -476,14 +504,14 @@ class Gr00tDataExporter:
                 output_path=str(abs_path),
                 width=width,
                 height=height,
-                fps=self.meta.fps,
+                fps=int(self.meta.info["fps"]),
                 codec=self.vcodec,
             )
         return writers
 
     def add_frame(self, frame: dict) -> None:
         frame_index = int(self.episode_buffer["size"])
-        timestamp = float(frame.get("timestamp", frame_index / float(self.meta.fps)))
+        timestamp = float(frame.get("timestamp", frame_index / float(self.meta.info["fps"])))
 
         self.episode_buffer["frame_index"].append(frame_index)
         self.episode_buffer["timestamp"].append(timestamp)
@@ -502,6 +530,15 @@ class Gr00tDataExporter:
 
         self.episode_buffer["size"] += 1
 
+    def _get_feature_spec(self, key: str) -> dict:
+        if key in self.features:
+            return self.features[key]
+        if key in SYSTEM_FEATURES:
+            return SYSTEM_FEATURES[key]
+        if key in ANNOTATION_FEATURES:
+            return ANNOTATION_FEATURES[key]
+        raise KeyError(f"Unknown feature spec for column: {key}")
+
     def _reset_after_episode(self, next_episode_index: int) -> None:
         self.episode_buffer = self.create_episode_buffer(next_episode_index)
         self.meta.next_episode_index = next_episode_index
@@ -512,13 +549,10 @@ class Gr00tDataExporter:
             writer.cancel()
         self.video_writers = {}
 
-    def _stop_video_writers(self) -> dict[str, str]:
-        rel_paths: dict[str, str] = {}
-        for key, writer in self.video_writers.items():
+    def _stop_video_writers(self) -> None:
+        for writer in self.video_writers.values():
             writer.stop()
-            rel_paths[key] = str(self.meta.get_video_file_path(int(self.episode_buffer["episode_index"]), key))
         self.video_writers = {}
-        return rel_paths
 
     def _write_data_parquet(self, episode_index: int, data_columns: dict[str, Any]) -> Path:
         rel_path = self.meta.get_data_file_path(episode_index)
@@ -528,10 +562,7 @@ class Gr00tDataExporter:
         arrays = []
         names = []
         for key, values in data_columns.items():
-            if key in self.features:
-                spec = self.features[key]
-            else:
-                spec = SYSTEM_FEATURES[key]
+            spec = self._get_feature_spec(key)
             names.append(key)
             arrays.append(
                 pa.array([_python_value(value) for value in values], type=_arrow_type_for_feature(spec))
@@ -539,60 +570,52 @@ class Gr00tDataExporter:
         pq.write_table(pa.Table.from_arrays(arrays, names=names), abs_path)
         return rel_path
 
-    def _compute_episode_stats(self, data_columns: dict[str, Any]) -> dict[str, dict[str, list]]:
-        stats = {}
-        for key, values in data_columns.items():
-            is_video = key in self.video_keys
-            stats[key] = _stat_payload(values, video=is_video)
-        return stats
+    def _load_data_table(self, path: Path) -> dict[str, list[Any]]:
+        table = pq.read_table(path)
+        return {name: table.column(name).to_pylist() for name in table.column_names}
 
-    def _build_episode_record(
-        self,
-        *,
-        episode_index: int,
-        episode_length: int,
-        tasks: list[str],
-        data_rel_path: Path,
-        video_rel_paths: dict[str, str],
-        episode_stats: dict[str, dict[str, list]],
-        dataset_from_index: int,
-        dataset_to_index: int,
-    ) -> dict:
-        chunk_index, data_file_index = self.meta.get_chunk_file_indices(episode_index)
-        record = {
-            "episode_index": episode_index,
-            "tasks": tasks,
-            "length": episode_length,
-            "data/chunk_index": chunk_index,
-            "data/file_index": data_file_index,
-            "dataset_from_index": dataset_from_index,
-            "dataset_to_index": dataset_to_index,
-            "meta/episodes/chunk_index": chunk_index,
-            "meta/episodes/file_index": 0,
-        }
-        for video_key in self.video_keys:
-            video_chunk_index, video_file_index = self.meta.get_chunk_file_indices(episode_index)
-            record[f"videos/{video_key}/chunk_index"] = video_chunk_index
-            record[f"videos/{video_key}/file_index"] = video_file_index
-            record[f"videos/{video_key}/from_timestamp"] = 0.0
-            record[f"videos/{video_key}/to_timestamp"] = (episode_length - 1) / float(self.meta.fps)
-        for feature_name, feature_stats in episode_stats.items():
-            for stat_key, stat_value in feature_stats.items():
-                record[f"stats/{feature_name}/{stat_key}"] = stat_value
-        return record
+    def _compute_dataset_stat_payloads(self) -> tuple[dict[str, dict[str, list]], dict[str, dict[str, list]]]:
+        feature_stat_rows: dict[str, list[dict[str, list]]] = {}
+        relative_stat_rows: dict[str, list[dict[str, list]]] = {}
 
-    def _aggregate_dataset_stats(self) -> dict[str, dict[str, list]]:
+        data_paths = sorted((self.root / "data").glob("chunk-*/episode_*.parquet"))
+        if not data_paths:
+            return {}, {}
+
+        known_specs = dict(self.features)
+        known_specs.update(SYSTEM_FEATURES)
+        known_specs.update(ANNOTATION_FEATURES)
+
+        for path in data_paths:
+            data_columns = self._load_data_table(path)
+            for key, values in data_columns.items():
+                spec = known_specs.get(key)
+                if spec is None or spec["dtype"] == "video":
+                    continue
+                feature_stat_rows.setdefault(key, []).append(_stat_payload(values))
+
+                if _feature_supports_relative_stats(key, spec):
+                    diff_values = _diff_sequence(values)
+                    if diff_values:
+                        relative_stat_rows.setdefault(key, []).append(_stat_payload(diff_values))
+
         stats = {}
-        feature_names = list(self.features.keys()) + list(SYSTEM_FEATURES.keys())
-        for feature_name in feature_names:
-            aggregated = _aggregate_episode_stats(self.meta.episode_records, feature_name)
+        for key, rows in feature_stat_rows.items():
+            aggregated = _aggregate_feature_stats(rows)
             if aggregated is not None:
-                stats[feature_name] = aggregated
-        return stats
+                stats[key] = aggregated
+
+        relative_stats = {}
+        for key, rows in relative_stat_rows.items():
+            aggregated = _aggregate_feature_stats(rows)
+            if aggregated is not None:
+                relative_stats[key] = aggregated
+
+        return stats, relative_stats
 
     def _update_info(self) -> None:
-        data_files = sorted((self.root / "data").glob("chunk-*/file-*.parquet"))
-        video_files = sorted((self.root / "videos").glob("*/*/*.mp4"))
+        data_files = sorted((self.root / "data").glob("chunk-*/episode_*.parquet"))
+        video_files = sorted((self.root / "videos").glob("chunk-*/*/episode_*.mp4"))
         self.meta.info["total_episodes"] = len(self.meta.episode_records)
         self.meta.info["total_frames"] = sum(int(row["length"]) for row in self.meta.episode_records)
         self.meta.info["total_tasks"] = len(self.meta.tasks_by_index)
@@ -602,6 +625,11 @@ class Gr00tDataExporter:
         self.meta.info["splits"] = {"train": f"0:{len(self.meta.episode_records)}"}
         self.meta.info["discarded_episode_indices"] = list(self.meta.discarded_episode_indices)
         self.meta.save_info()
+
+    def _refresh_stats(self) -> None:
+        stats, relative_stats = self._compute_dataset_stat_payloads()
+        self.meta.save_stats(stats)
+        self.meta.save_relative_stats(relative_stats)
 
     def save_episode(self) -> None:
         if int(self.episode_buffer["size"]) == 0:
@@ -617,10 +645,11 @@ class Gr00tDataExporter:
             [self.meta.get_task_index(task) for task in self.episode_buffer["task"]],
             dtype=np.int64,
         )
+
         data_columns = {
             key: list(values)
             for key, values in self.episode_buffer.items()
-            if key in self.features
+            if key in self.features and key not in self.video_keys
         }
         data_columns.update(
             {
@@ -629,24 +658,20 @@ class Gr00tDataExporter:
                 "episode_index": np.full((episode_length,), episode_index, dtype=np.int64),
                 "index": np.arange(dataset_from_index, dataset_to_index, dtype=np.int64),
                 "task_index": task_indices,
+                "annotation.human.action.task_description": task_indices,
             }
         )
 
-        data_rel_path = self._write_data_parquet(episode_index, {k: v for k, v in data_columns.items() if k not in self.video_keys})
-        video_rel_paths = self._stop_video_writers()
-        episode_stats = self._compute_episode_stats(data_columns)
-        record = self._build_episode_record(
-            episode_index=episode_index,
-            episode_length=episode_length,
-            tasks=tasks,
-            data_rel_path=data_rel_path,
-            video_rel_paths=video_rel_paths,
-            episode_stats=episode_stats,
-            dataset_from_index=dataset_from_index,
-            dataset_to_index=dataset_to_index,
+        self._write_data_parquet(episode_index, data_columns)
+        self._stop_video_writers()
+        self.meta.append_episode_record(
+            {
+                "episode_index": episode_index,
+                "tasks": tasks,
+                "length": episode_length,
+            }
         )
-        self.meta.append_episode_record(record)
-        self.meta.save_stats(self._aggregate_dataset_stats())
+        self._refresh_stats()
         self._update_info()
         self._reset_after_episode(episode_index + 1)
 

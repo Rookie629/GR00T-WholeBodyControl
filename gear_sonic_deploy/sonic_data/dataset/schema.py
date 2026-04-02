@@ -77,7 +77,7 @@ def get_modality_config(
             "navigate_command": {"start": 0, "end": 3, "original_key": "teleop.navigate_command"},
         },
         "video": {"ego_view": {"original_key": "observation.images.ego_view"}},
-        "annotation": {"human.task_description": {"original_key": "task_index"}},
+        "annotation": {"human.action.task_description": {"original_key": "task_index"}},
     }
     if add_stereo_camera:
         modality_config["video"].update(

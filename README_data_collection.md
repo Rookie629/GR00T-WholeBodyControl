@@ -168,5 +168,6 @@ Recorded samples now support:
 - depth is stored as array data rather than video, by design
 - if the G1 system camera service occupies the D435, the custom image server
   cannot start until that service conflict is handled
-- the dataset layout is reference-compatible rather than a byte-for-byte clone
-  of `lerobot`, so downstream code should target the local parquet/mp4 format
+- the core on-disk layout now follows the GR00T LeRobot v2 structure
+  (`meta/tasks.jsonl`, `meta/episodes.jsonl`, episode-based parquet/mp4 paths),
+  but depth remains a local `uint16` extension rather than an MP4 video modality

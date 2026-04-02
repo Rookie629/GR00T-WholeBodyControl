@@ -52,32 +52,77 @@ def load_dataset_info(dataset_root: Path) -> dict[str, Any]:
 
 
 def load_episode_index(dataset_root: Path) -> pd.DataFrame:
-    episode_files = sorted((dataset_root / "meta" / "episodes").glob("chunk-*/file-*.parquet"))
-    if not episode_files:
+    legacy_episode_files = sorted((dataset_root / "meta" / "episodes").glob("chunk-*/file-*.parquet"))
+    legacy_jsonl = dataset_root / "meta" / "episodes.jsonl"
+    if legacy_jsonl.exists():
+        rows = []
+        with legacy_jsonl.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        if not rows:
+            raise FileNotFoundError(f"No episode rows found in {legacy_jsonl}")
+        return pd.DataFrame(rows)
+    if not legacy_episode_files:
         raise FileNotFoundError(
-            f"No episode index parquet found under {dataset_root / 'meta' / 'episodes'}"
+            f"No episode metadata found under {dataset_root / 'meta'}"
         )
-    frames = [pd.read_parquet(path) for path in episode_files]
+    frames = [pd.read_parquet(path) for path in legacy_episode_files]
     return pd.concat(frames, ignore_index=True)
 
 
-def load_data_file(dataset_root: Path, chunk_index: int, file_index: int) -> pd.DataFrame:
-    path = dataset_root / "data" / f"chunk-{chunk_index:03d}" / f"file-{file_index:03d}.parquet"
+def resolve_chunk_file_indices(info: dict[str, Any], episode_index: int) -> tuple[int, int]:
+    chunk_size = int(info.get("chunks_size", 1000))
+    return divmod(int(episode_index), chunk_size)
+
+
+def build_data_path(dataset_root: Path, info: dict[str, Any], episode_index: int) -> Path:
+    chunk_index, file_index = resolve_chunk_file_indices(info, episode_index)
+    template = info.get("data_path")
+    if template:
+        path = dataset_root / template.format(
+            chunk_index=chunk_index,
+            file_index=file_index,
+            episode_index=int(episode_index),
+        )
+        if path.exists():
+            return path
+    new_path = dataset_root / "data" / f"chunk-{chunk_index:03d}" / f"episode_{episode_index:06d}.parquet"
+    if new_path.exists():
+        return new_path
+    return dataset_root / "data" / f"chunk-{chunk_index:03d}" / f"file-{file_index:03d}.parquet"
+
+
+def load_data_file(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Data parquet not found: {path}")
     return pd.read_parquet(path)
 
 
 def build_video_path(
-    dataset_root: Path, info: dict[str, Any], video_key: str, chunk_index: int, file_index: int
+    dataset_root: Path, info: dict[str, Any], video_key: str, episode_index: int
 ) -> Path:
+    chunk_index, file_index = resolve_chunk_file_indices(info, episode_index)
     template = info.get("video_path")
     if template:
-        return dataset_root / template.format(
+        path = dataset_root / template.format(
             video_key=video_key,
             chunk_index=int(chunk_index),
             file_index=int(file_index),
+            episode_index=int(episode_index),
         )
+        if path.exists():
+            return path
+    new_path = (
+        dataset_root
+        / "videos"
+        / f"chunk-{chunk_index:03d}"
+        / video_key
+        / f"episode_{episode_index:06d}.mp4"
+    )
+    if new_path.exists():
+        return new_path
     return (
         dataset_root
         / "videos"
@@ -169,6 +214,7 @@ class DatasetEpisodeReader:
         self.episode_row = self._select_episode_row(episode_index)
         self.episode_index = int(self.episode_row["episode_index"])
         self.length = int(self.episode_row["length"])
+        self.uses_legacy_episode_index = "data/chunk_index" in self.episode_row.index
 
         features = self.info["features"]
         if "observation.state" not in features:
@@ -177,28 +223,34 @@ class DatasetEpisodeReader:
             raise DatasetReplayError(f"Dataset is missing {self.depth_key} in meta/info.json")
         self.joint_names = list(features["observation.state"]["names"])
 
-        data_chunk_index = int(self.episode_row["data/chunk_index"])
-        data_file_index = int(self.episode_row["data/file_index"])
-        data_df = load_data_file(self.dataset_root, data_chunk_index, data_file_index)
+        if self.uses_legacy_episode_index:
+            data_chunk_index = int(self.episode_row["data/chunk_index"])
+            data_file_index = int(self.episode_row["data/file_index"])
+            data_path = self.dataset_root / "data" / f"chunk-{data_chunk_index:03d}" / f"file-{data_file_index:03d}.parquet"
+        else:
+            data_path = build_data_path(self.dataset_root, self.info, self.episode_index)
+        data_df = load_data_file(data_path)
         self.data_df = self._select_episode_frames_from_data_file(data_df)
 
-        video_chunk_index = int(self.episode_row[f"videos/{self.rgb_key}/chunk_index"])
-        video_file_index = int(self.episode_row[f"videos/{self.rgb_key}/file_index"])
         self.video_path = build_video_path(
             self.dataset_root,
             self.info,
             self.rgb_key,
-            video_chunk_index,
-            video_file_index,
+            self.episode_index,
         )
         if not self.video_path.exists():
             raise FileNotFoundError(f"RGB video not found: {self.video_path}")
 
-        from_timestamp = float(self.episode_row[f"videos/{self.rgb_key}/from_timestamp"])
-        to_timestamp = float(self.episode_row[f"videos/{self.rgb_key}/to_timestamp"])
-        self.video_start_frame = int(round(from_timestamp * self.fps))
-        self.video_end_frame = int(round(to_timestamp * self.fps)) + 1
-        self.video_frame_count = self.video_end_frame - self.video_start_frame
+        if self.uses_legacy_episode_index:
+            from_timestamp = float(self.episode_row[f"videos/{self.rgb_key}/from_timestamp"])
+            to_timestamp = float(self.episode_row[f"videos/{self.rgb_key}/to_timestamp"])
+            self.video_start_frame = int(round(from_timestamp * self.fps))
+            self.video_end_frame = int(round(to_timestamp * self.fps)) + 1
+            self.video_frame_count = self.video_end_frame - self.video_start_frame
+        else:
+            self.video_start_frame = 0
+            self.video_end_frame = self.length
+            self.video_frame_count = self.length
 
         if len(self.data_df) != self.length:
             raise DatasetReplayError(
@@ -215,7 +267,10 @@ class DatasetEpisodeReader:
             start_frame=self.video_start_frame,
             frame_count=self.video_frame_count,
         )
-        if self.video_start_frame != 0 or self.video_reader.actual_frame_count != self.video_frame_count:
+        if (
+            self.uses_legacy_episode_index
+            and (self.video_start_frame != 0 or self.video_reader.actual_frame_count != self.video_frame_count)
+        ):
             raise DatasetReplayError(
                 "Replay currently expects one RGB video shard per episode. "
                 f"Episode {self.episode_index} maps to frames [{self.video_start_frame}, "
